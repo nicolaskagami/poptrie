@@ -1,23 +1,30 @@
-//! Poptrie implementation
-// - no-std, (requires alloc)
-// - generic over u32 (IPv4) and u128 (IPv6)
-// - not using buddy memory allocation
-// - probably not using incremental update
-// TODO: implement construction
+//! # poptrie
+//!
+//! A Poptrie is a data structure for efficient longest-prefix matching. It's similar to a tree bitmap, but keeps nodes in a single array.
+//! # Implementation Details
+//! - Pure Rust, `no_std` implementation, requiring `alloc`.
+//! - No external dependencies.
+//! - Not using Direct Pointing (section 3.4 of the paper).
+//! - Not using buddy memory allocation.
+//! - Not using incremental update (section 3.5 of the paper).
+//! - Not using an auxiliary radix tree.
+//! - Using an original algorithm for storing prefixes that saves space and insertion time.
+//! - Using an original algorithm for keeping and updating default values.
+// TODO: make generic over IPv4 and IPv6
 // TODO: make stride generic
 // TODO: implement longer strides (CP-trie)
 // TODO: implement direct pointing (generic)
 // TODO: newtypes for dealing with bitmaps? Always one base/offset, one index and ids
-
 #![no_std]
-pub mod bits;
 
 extern crate alloc;
-use core::cmp::min;
+
+pub mod bits;
 
 use alloc::vec;
 use alloc::vec::Vec;
 use bits::*;
+use core::cmp::min;
 
 #[derive(Debug, Clone)]
 struct Node<T: Clone> {
@@ -29,8 +36,7 @@ struct Node<T: Clone> {
 
     /// Bitmap of local prefixes
     leaf_bitmap: LeafBitmap,
-    // TODO: Consider making offsets more local so it's faster to update.
-    // Cost is a few adds during traversal.
+
     /// Offset of the first node pointed by this node
     node_base: u32,
 
@@ -60,6 +66,9 @@ impl<T: Clone> Node<T> {
     }
 }
 
+/// The maximum number of bits we can consume from the prefix at a time.
+///
+/// This is 6 because the 2^6 = 64, which is the biggest size for which a native popcount instruction exists.
 const STRIDE: u8 = 6;
 // TODO: generify for u128
 pub struct Poptrie<T: Clone> {
@@ -85,27 +94,20 @@ impl<T: Clone> Poptrie<T> {
         }
     }
 
-    // Problem: what if there is an internal node, but our best match is before it?
-    // We'd either have to lookout for best matches while traversing the trie or have to insert a default for every internal node.
-    // Challenge with the latter is that when inserting a new entry we need to make it default for some nodes
-    // We'd need to check the leaf bitmap of the entry to see if there are
+    /// Insert a value into the trie associated with the given prefix.
     pub fn insert(&mut self, prefix: Prefix, value: T) {
         let Prefix(key, key_length) = prefix;
         let mut key_offset = 0;
         // First node is root
         let mut parent_node_index = 0;
-        // TODO: Improve borrowing around parent_node (currently cloning)
-        let mut parent_node = self.nodes[parent_node_index].clone();
+        let mut parent_node = &self.nodes[parent_node_index];
 
         // Check if it's in the correct depth
         // If we use '>', we prefer STRIDE length representations at one level earlier, else we prefer 0 length
-        while key_length >= key_offset + STRIDE {
-            // We may need to insert one node per depth
-            // We'll need to insert if it doesn't already exist
-            // If we use '>=', we need to correct for 0 remaining length
-            let stride = if key_length == key_offset { 0 } else { STRIDE };
+        // Since our default implementation is in place, we can just use '>'
+        while key_length > key_offset + STRIDE {
             let local_id =
-                NodeId::new(extract_bits(key, key_offset, stride) as u8);
+                NodeId::new(extract_bits(key, key_offset, STRIDE) as u8);
             // Check if there's already one with `local_id`
             let leaf_base = parent_node.leaf_base;
             let node_base = parent_node.node_base;
@@ -114,18 +116,16 @@ impl<T: Clone> Poptrie<T> {
             let node_index = parent_node.node_bitmap.bitmap_index(local_id);
             // If there's no node with `local_id`, insert one
             if !parent_node.node_bitmap.contains(local_id) {
-                let leaf_id = LeafId::new(local_id, stride);
+                let leaf_id = LeafId::new(local_id, STRIDE);
 
-                // TODO: Clean this up... Important not to propagate defaults down when inserting because we aren't updating them.
-                let mut parent_default = None;
                 // Setting the default value for the new node if there's a leaf that encompasses it
-                if let Some(leaf_index) =
-                    parent_node.leaf_bitmap.find_leaf_lpm(leaf_id)
-                {
-                    let leaf_default =
-                        self.leaves[(leaf_base + leaf_index) as usize].clone();
-                    parent_default = Some(leaf_default);
-                }
+                // Important not to propagate defaults down when inserting because we aren't updating them.
+                let parent_default = parent_node
+                    .leaf_bitmap
+                    .find_leaf_lpm(leaf_id)
+                    .map(|leaf_index| {
+                        self.leaves[(leaf_base + leaf_index) as usize].clone()
+                    });
 
                 // Calculate the next base
                 let (next_node_base, next_leaf_base) =
@@ -140,11 +140,11 @@ impl<T: Clone> Poptrie<T> {
                             .concat(),
                         next_node_base,
                         next_leaf_base,
-                        parent_default.clone(),
+                        parent_default,
                     ),
                 );
-                // Let's ensure that nodes are stored in order
-                // If it inserts more nodes, all the following ones will have to be updated as well
+
+                // Set the node bitmap for the new node
                 self.nodes[parent_node_index].node_bitmap.set(local_id);
 
                 // TODO: improve this updating (could be lazy)
@@ -153,9 +153,11 @@ impl<T: Clone> Poptrie<T> {
                     self.nodes[i].node_base += 1;
                 }
             }
+
             // Now this node is the next parent node
             parent_node_index = (node_base + node_index) as usize;
-            parent_node = self.nodes[parent_node_index].clone();
+            parent_node = &self.nodes[parent_node_index];
+
             // Advance the key offset
             key_offset += STRIDE;
         }
@@ -168,12 +170,11 @@ impl<T: Clone> Poptrie<T> {
 
         // TODO: Keep only indices in leaves
         let leaf_base = self.nodes[parent_node_index].leaf_base;
-        let local_leaf_offset = parent_node.leaf_bitmap.bitmap_index(leaf_id);
+        let leaf_index = parent_node.leaf_bitmap.bitmap_index(leaf_id);
         // Check if there is a leaf with the key
         if !parent_node.leaf_bitmap.contains(leaf_id) {
             // Create a new leaf node
-            self.leaves
-                .insert((leaf_base + local_leaf_offset) as usize, value);
+            self.leaves.insert((leaf_base + leaf_index) as usize, value);
 
             // Update offsets after the index
             // Now we can insert leaves - It's relatively slow having to shift everything
@@ -184,68 +185,35 @@ impl<T: Clone> Poptrie<T> {
             // Set the leaf
             self.nodes[parent_node_index].leaf_bitmap.set(leaf_id);
         } else {
-            self.leaves[(leaf_base + local_leaf_offset) as usize] = value;
+            // Just overwrite the existing leaf
+            self.leaves[(leaf_base + leaf_index) as usize] = value;
         }
-        // TODO: Insert default for internal nodes
-        // Careful! Check the leaf bitmap of this node to see there are more specific prefixes... let's not think about delete just yet.
-        // The default will be the /0 of that stride. If it explicitly exists in that subtree we shouldn't overwrite it.
-        // Else, if it was set by one of our leaves... the longest prefix needs to win.
 
-        // For every child node
-        // let i = 0; // Could sub in for local_node_offset
-        let base_node_offset = self.nodes[parent_node_index].node_base;
-        // TODO: Improve this search
-        for id in 0..=63 {
-            // If it exists
-            let node_id = NodeId::new(id);
-            if parent_node.node_bitmap.contains(node_id) {
-                // Check if there is a leaf node in this parent node that would be more specific to this key
-                // Let's get the base prefix of this child (id) and check if there are leaves
-                let local_leaf_id = LeafId::new(node_id, STRIDE);
-                let local_node_offset =
-                    parent_node.node_bitmap.bitmap_index(node_id);
-                if self.nodes[parent_node_index]
-                    .leaf_bitmap
-                    .find_leaf_lpm(local_leaf_id)
-                    .is_some_and(|id| id == local_leaf_offset)
-                {
-                    let local_default = self.leaves
-                        [(leaf_base + local_leaf_offset) as usize]
-                        .clone();
-                    // Set default
-                    self.nodes
-                        [(base_node_offset + local_node_offset) as usize]
-                        .default_value = Some(local_default);
-                };
-            }
-        }
+        // Update the defaults for children
+        self.update_children_defaults(parent_node_index, leaf_base, leaf_index);
     }
 
+    /// Lookup a key in the trie, performing longest-prefix match.
     pub fn lookup(&self, key: u32) -> Option<T> {
         let mut key_offset = 0;
         // First node is root
         let mut parent_node_index = 0;
-        // TODO: Improve borrowing around parent_node (currently cloning)
-        let mut parent_node = self.nodes[parent_node_index].clone();
-        let mut default = None;
-        if parent_node.default_value.is_some() {
-            default = parent_node.default_value.clone();
-        }
-
+        let mut parent_node = &self.nodes[parent_node_index];
+        let mut default = parent_node.default_value.clone();
         let mut local_id =
             NodeId::new(extract_bits(key, key_offset, STRIDE) as u8);
 
-        // Should try internal nodes first, apparently
+        // Should try internal nodes first, apparently. Shouldn't be a problem considering our default implementation.
         while parent_node.node_bitmap.contains(local_id) {
-            // Before anything, take a look at the default value
-
             // If there's a valid internal node, traverse it
             let node_base = parent_node.node_base;
             let node_offset = parent_node.node_bitmap.bitmap_index(local_id);
 
+            // Update the parent node
             parent_node_index = (node_base + node_offset) as usize;
-            parent_node = self.nodes[parent_node_index].clone(); // TODO: Optimize clone away
+            parent_node = &self.nodes[parent_node_index];
 
+            // Keep track of the latest valid default value
             if parent_node.default_value.is_some() {
                 default = parent_node.default_value.clone();
             }
@@ -259,12 +227,12 @@ impl<T: Clone> Poptrie<T> {
         // We start by calculating the prefix index - can be improved
         let remaining_length = min(STRIDE, 32 - key_offset);
         let local_prefix_id = LeafId::new(local_id, remaining_length);
-        let leaf_base = parent_node.leaf_base;
 
         // Check leaves for receding prefixes
         if let Some(leaf_index) =
             parent_node.leaf_bitmap.find_leaf_lpm(local_prefix_id)
         {
+            let leaf_base = parent_node.leaf_base;
             return Some(
                 self.leaves[(leaf_base + leaf_index) as usize].clone(),
             );
@@ -285,6 +253,41 @@ impl<T: Clone> Poptrie<T> {
             last_node.node_base + last_node.node_bitmap.pop_count();
 
         (next_node_base, next_leaf_base)
+    }
+
+    /// Update the children defaults for a given parent node index.
+    fn update_children_defaults(
+        &mut self,
+        parent_node_index: usize,
+        leaf_base: u32,
+        leaf_index: u32,
+    ) {
+        let base_node_offset = self.nodes[parent_node_index].node_base;
+        // For every child node
+        for id in 0..=63 {
+            let node_id = NodeId::new(id);
+            // If it exists
+            if self.nodes[parent_node_index].node_bitmap.contains(node_id) {
+                // Check if there is a leaf node in this parent node that would be more specific to this key
+                // Let's get the base prefix of this child (id) and check if there are leaves
+                let local_leaf_id = LeafId::new(node_id, STRIDE);
+                let local_node_offset = self.nodes[parent_node_index]
+                    .node_bitmap
+                    .bitmap_index(node_id);
+                if self.nodes[parent_node_index]
+                    .leaf_bitmap
+                    .find_leaf_lpm(local_leaf_id)
+                    .is_some_and(|id| id == leaf_index)
+                {
+                    let local_default =
+                        self.leaves[(leaf_base + leaf_index) as usize].clone();
+                    // Set default
+                    self.nodes
+                        [(base_node_offset + local_node_offset) as usize]
+                        .default_value = Some(local_default);
+                };
+            }
+        }
     }
 }
 

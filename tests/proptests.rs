@@ -1,8 +1,7 @@
 //! Proptests for Poptrie
 mod utils;
 use core::net::Ipv4Addr;
-use iptrie::Poptrie;
-use iptrie::Prefix;
+use poptrie::{Poptrie, Prefix};
 use proptest::prelude::*;
 use utils::Ipv4Prefix;
 
