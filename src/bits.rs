@@ -59,15 +59,13 @@ impl LeafBitmap {
 
     /// Returns internal index for the longest prefix match of a leaf ID.
     pub(crate) fn find_leaf_lpm(&self, mut local_id: LeafId) -> Option<u32> {
-        loop {
-            if self.contains(local_id) {
-                break Some(self.bitmap_index(local_id));
-            }
+        while !self.contains(local_id) {
             if local_id.0 == 0 {
-                break None;
-            };
+                return None;
+            }
             local_id = local_id.parent();
         }
+        Some(self.bitmap_index(local_id))
     }
 
     /// Returns true if the bitmap contains the given leaf ID.
