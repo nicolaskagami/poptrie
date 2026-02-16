@@ -21,19 +21,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bits::*;
 
-// Idea: u128 bitfield to 1-1 associate any leaf prefix
-// (XXXXXX)(prefix length 0) -> 0
-// (0XXXXX)(prefix length 1) -> 1
-// (1XXXXX)(prefix length 1) -> 2
-// ...
-// We can get the the bit index like this:
-// (prefix, len) -> 2^len + extract(prefix, len)
-//
-// When looking up an address, we'll have the full "prefix"
-// Use the value above and divide by two until we get something (perhaps -1 before)
-// Index can still be popcounted with 2 popcounts
-//
-
 #[derive(Debug, Clone)]
 struct Node<T: Clone> {
     #[cfg(test)]
@@ -43,7 +30,7 @@ struct Node<T: Clone> {
     node_bitmap: u64,
 
     /// Bitmap of local prefixes
-    leaf_bitmap: u128, // Optimization for storing exact prefixes with lengths
+    leaf_bitmap: LeafBitmap,
     // TODO: Consider making offsets more local so it's faster to update.
     // Cost is a few adds during traversal.
     /// Offset of the first node pointed by this node
@@ -67,7 +54,7 @@ impl<T: Clone> Node<T> {
             #[cfg(test)]
             debug_prefix,
             node_bitmap: 0,
-            leaf_bitmap: 0,
+            leaf_bitmap: LeafBitmap::new(),
             node_offset,
             leaf_offset,
             default_value,
@@ -131,13 +118,13 @@ impl<T: Clone> Poptrie<T> {
                 // This is the offset + 1, since we're adding a new one
                 local_node_offset =
                     bitmap_index(parent_node.node_bitmap, local_id);
-                let local_leaf_id = bitmap_id_prefix_u128(local_id, stride);
+                let local_leaf_id = LeafId::new(local_id, stride);
 
                 // TODO: Clean this up... Important not to propagate defaults down when inserting because we aren't updating them.
                 let mut parent_default = None;
                 // Setting the default value for the new node if there's a leaf that encompasses it
                 if let Some(leaf_index) =
-                    find_leaf_lpm(parent_node.leaf_bitmap, local_leaf_id)
+                    parent_node.leaf_bitmap.find_leaf_lpm(local_leaf_id)
                 {
                     let leaf_default = self.leaves
                         [(base_leaf_offset + leaf_index) as usize]
@@ -190,14 +177,13 @@ impl<T: Clone> Poptrie<T> {
         let local_id = extract_bits(key, key_offset, remaining_length) as u8;
         // We don't need to clear the bits that are not used because the extraction function already does it for us.
 
-        let leaf_id = bitmap_id_prefix_u128(local_id, remaining_length);
+        let leaf_id = LeafId::new(local_id, remaining_length);
 
         // TODO: Keep only indices in leaves
         let base_leaf_offset = self.nodes[parent_node_index].leaf_offset;
-        let mut local_leaf_offset =
-            bitmap_index_u128(parent_node.leaf_bitmap, leaf_id);
+        let local_leaf_offset = parent_node.leaf_bitmap.bitmap_index(leaf_id);
         // Check if there is a leaf with the key
-        if !bitmap_contains_u128(parent_node.leaf_bitmap, leaf_id) {
+        if !parent_node.leaf_bitmap.contains(leaf_id) {
             // Create a new leaf node
             self.leaves
                 .insert((base_leaf_offset + local_leaf_offset) as usize, value);
@@ -209,13 +195,8 @@ impl<T: Clone> Poptrie<T> {
             }
 
             // Set the leaf
-            bitmap_set_u128(
-                &mut self.nodes[parent_node_index].leaf_bitmap,
-                leaf_id,
-            );
+            self.nodes[parent_node_index].leaf_bitmap.set(leaf_id);
         } else {
-            // Overwrite the existing leaf (-1 to correct index)
-            local_leaf_offset -= 1;
             self.leaves[(base_leaf_offset + local_leaf_offset) as usize] =
                 value;
         }
@@ -233,14 +214,13 @@ impl<T: Clone> Poptrie<T> {
             if bitmap_contains(parent_node.node_bitmap, id) {
                 // Check if there is a leaf node in this parent node that would be more specific to this key
                 // Let's get the base prefix of this child (id) and check if there are leaves
-                let local_leaf_id = bitmap_id_prefix_u128(id, STRIDE);
+                let local_leaf_id = LeafId::new(id, STRIDE);
                 let local_node_offset =
                     bitmap_index(parent_node.node_bitmap, id) - 1;
-                if find_leaf_lpm(
-                    self.nodes[parent_node_index].leaf_bitmap,
-                    local_leaf_id,
-                )
-                .is_some_and(|id| id == local_leaf_offset)
+                if self.nodes[parent_node_index]
+                    .leaf_bitmap
+                    .find_leaf_lpm(local_leaf_id)
+                    .is_some_and(|id| id == local_leaf_offset)
                 {
                     let local_default = self.leaves
                         [(base_leaf_offset + local_leaf_offset) as usize]
@@ -292,12 +272,12 @@ impl<T: Clone> Poptrie<T> {
         // (space and insert optimization) Check leaf at local_id and its parent prefixes
         // We start by calculating the prefix index - can be improved
         let remaining_length = min(STRIDE, 32 - key_offset);
-        let local_prefix_id = bitmap_id_prefix_u128(local_id, remaining_length);
+        let local_prefix_id = LeafId::new(local_id, remaining_length);
         let base_leaf_offset = parent_node.leaf_offset;
 
         // Check leaves for receding prefixes
         if let Some(leaf_index) =
-            find_leaf_lpm(parent_node.leaf_bitmap, local_prefix_id)
+            parent_node.leaf_bitmap.find_leaf_lpm(local_prefix_id)
         {
             return Some(
                 self.leaves[(base_leaf_offset + leaf_index) as usize].clone(),
@@ -314,7 +294,7 @@ impl<T: Clone> Poptrie<T> {
         // SAFETY: We start with a root node at 0
         let last_node = &self.nodes[next_node_index - 1];
         let next_leaf_base =
-            last_node.leaf_offset + last_node.leaf_bitmap.count_ones();
+            last_node.leaf_offset + last_node.leaf_bitmap.pop_count();
         let next_node_base =
             last_node.node_offset + last_node.node_bitmap.count_ones();
 
