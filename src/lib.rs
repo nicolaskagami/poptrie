@@ -319,19 +319,19 @@ fn find_leaf_lpm(leaf_bitmap: u128, mut local_id: u8) -> Option<u32> {
 fn test_find_leaf() {
     let mut trie = Poptrie::new();
     trie.insert(Prefix(u32::from_be_bytes([192, 168, 0, 0]), 30), 0);
-    // trie.insert(Prefix(u32::from_be_bytes([192, 168, 0, 1]), 32), 1);
-    // trie.insert(Prefix(u32::from_be_bytes([192, 168, 0, 2]), 32), 2);
+    trie.insert(Prefix(u32::from_be_bytes([192, 168, 0, 1]), 32), 1);
+    trie.insert(Prefix(u32::from_be_bytes([192, 168, 0, 2]), 32), 2);
 
-    // assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 0])), Some(0));
-    // assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 1])), Some(1));
-    // assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 2])), Some(2));
-    // assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 3])), Some(0));
+    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 0])), Some(0));
+    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 1])), Some(1));
+    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 2])), Some(2));
+    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 3])), Some(0));
 }
 
 #[test]
-fn easy() {
+fn one_level_before() {
     let mut trie = Poptrie::new();
-    trie.insert(Prefix(0b000001_000001_000001_000001_000001_00, 31), 0);
+    trie.insert(Prefix(0b000001_000001_000001_000001_000000_00, 25), 0);
     trie.insert(Prefix(0b000001_000001_000001_000001_000001_01, 32), 1);
     assert_eq!(
         trie.lookup(0b000001_000001_000001_000001_000001_00),
@@ -344,16 +344,41 @@ fn easy() {
 }
 
 #[test]
-fn one_level_before() {
+fn base_default() {
+    // Levels 1 and 2
     let mut trie = Poptrie::new();
-    trie.insert(Prefix(0b000001_000001_000001_000001_000001_00, 25), 0);
-    trie.insert(Prefix(0b000001_000001_000001_000001_000001_01, 32), 1);
+    trie.insert(Prefix(0b000001_000000_000000_000000_000000_00, 6), 0);
+    trie.insert(Prefix(0b000000_000000_000000_000000_000000_00, 12), 1);
     assert_eq!(
-        trie.lookup(0b000001_000001_000001_000001_000001_00),
+        trie.lookup(0b000001_000000_000000_000000_000000_00),
         Some(0)
     );
+    // Levels 2 and 3
+    let mut trie = Poptrie::new();
+    trie.insert(Prefix(0b000000_110000_000000_000000_000000_00, 12), 0);
+    trie.insert(Prefix(0b000000_000000_000000_000000_000000_00, 18), 1);
     assert_eq!(
-        trie.lookup(0b000001_000001_000001_000001_000001_01),
+        trie.lookup(0b000000_110000_000000_000000_000000_00),
+        Some(0)
+    );
+    // Levels 1 and 2 (non-full length)
+    let mut trie = Poptrie::new();
+    trie.insert(Prefix(0b001100_000000_000000_000000_000000_00, 10), 0);
+    trie.insert(Prefix(0b000000_000000_000000_000000_000000_00, 1), 1);
+    assert_eq!(
+        trie.lookup(0b001100_000100_000000_000000_000000_00),
+        Some(1)
+    );
+}
+
+#[test]
+fn default_overwrite() {
+    let mut trie = Poptrie::new();
+    trie.insert(Prefix(0b000000_000000_000000_000000_000000_00, 0), 0);
+    trie.insert(Prefix(0b000001_000001_000000_000000_000000_00, 15), 2);
+    trie.insert(Prefix(0b000000_000000_000000_000000_000000_00, 0), 1);
+    assert_eq!(
+        trie.lookup(0b000001_000001_001000_000000_000000_00),
         Some(1)
     );
 }
