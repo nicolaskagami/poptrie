@@ -26,8 +26,8 @@ pub(crate) fn extract_bits(key: u32, offset: u8, len: u8) -> u32 {
 pub(crate) struct LeafId(u8);
 impl LeafId {
     /// Creates a new `LeafId` from a prefix and length.
-    pub fn new(prefix: u8, len: u8) -> Self {
-        LeafId((1u8 << len) - 1 + prefix)
+    pub fn new(prefix: NodeId, len: u8) -> Self {
+        LeafId((1u8 << len) - 1 + prefix.0)
     }
 
     /// Returns the parent `LeafId`.
@@ -84,24 +84,45 @@ impl LeafBitmap {
     }
 }
 
-pub(crate) fn bitmap_contains(bitmap: u64, id: u8) -> bool {
-    bitmap & (1 << id) != 0
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NodeId(u8);
+impl NodeId {
+    pub(crate) fn new(id: u8) -> NodeId {
+        NodeId(id)
+    }
 }
 
-pub(crate) fn bitmap_set(bitmap: &mut u64, id: u8) {
-    *bitmap |= 1 << id;
-}
+//TODO: Consider simplifying Bitmap usage into a trait/generic struct
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NodeBitmap(u64);
+impl NodeBitmap {
+    pub(crate) fn new() -> NodeBitmap {
+        NodeBitmap(0)
+    }
 
-#[allow(dead_code)]
-pub(crate) fn clear_lsb(key: &mut u8, len: u8) {
-    *key &= 0xFF << len;
-}
+    /// Returns the internal index of the given node ID.
+    pub(crate) fn bitmap_index(&self, id: NodeId) -> u32 {
+        if id.0 == 0 {
+            0
+        } else {
+            (self.0 << (64u8 - id.0)).count_ones()
+        }
+    }
 
-/// Returns the number of 1s in bitmap before or equal to `id`
-//
-// TODO: Consider a way to not have to -1 some places
-pub(crate) fn bitmap_index(bitmap: u64, id: u8) -> u32 {
-    (bitmap << (63u8 - id)).count_ones()
+    /// Returns true if the bitmap contains the given node ID.
+    pub(crate) fn contains(&self, id: NodeId) -> bool {
+        self.0 & (1 << id.0) != 0
+    }
+
+    /// Sets the given node ID in the bitmap.
+    pub(crate) fn set(&mut self, id: NodeId) {
+        self.0 |= 1 << id.0;
+    }
+
+    /// Returns the number of nodes in the bitmap.
+    pub(crate) fn pop_count(&self) -> u32 {
+        self.0.count_ones()
+    }
 }
 
 #[cfg(test)]
@@ -121,29 +142,29 @@ mod tests {
 
     #[test]
     fn bitmap_index_test() {
-        assert_eq!(bitmap_index(0, 0), 0);
-        assert_eq!(bitmap_index(0, 63), 0);
+        let zero = NodeBitmap(0);
+        assert_eq!(zero.bitmap_index(NodeId(0)), 0);
+        assert_eq!(zero.bitmap_index(NodeId(63)), 0);
 
-        assert_eq!(bitmap_index(1, 0), 1);
-        assert_eq!(bitmap_index(1, 1), 1);
-        assert_eq!(bitmap_index(1, 63), 1);
+        let one = NodeBitmap(1);
+        assert_eq!(one.bitmap_index(NodeId(0)), 0);
+        assert_eq!(one.bitmap_index(NodeId(1)), 1);
+        assert_eq!(one.bitmap_index(NodeId(63)), 1);
 
-        assert_eq!(bitmap_index(32, 4), 0);
-        assert_eq!(bitmap_index(32, 5), 1);
-        assert_eq!(bitmap_index(32, 63), 1);
+        let thirty_two = NodeBitmap(32);
+        assert_eq!(thirty_two.bitmap_index(NodeId(5)), 0);
+        assert_eq!(thirty_two.bitmap_index(NodeId(6)), 1);
+        assert_eq!(thirty_two.bitmap_index(NodeId(63)), 1);
 
-        assert_eq!(bitmap_index(1u64.rotate_right(1), 0), 0);
-        assert_eq!(bitmap_index(1u64.rotate_right(1), 62), 0);
-        assert_eq!(bitmap_index(1u64.rotate_right(1), 63), 1);
-
-        assert_eq!(bitmap_index(u64::MAX, 63), 64);
+        let max = NodeBitmap(u64::MAX);
+        assert_eq!(max.bitmap_index(NodeId(63)), 63);
     }
 
     #[test]
     fn bitmap_id_prefix_test() {
-        assert_eq!(LeafId::new(0, 0), LeafId(0));
-        assert_eq!(LeafId::new(0, 1), LeafId(1));
-        assert_eq!(LeafId::new(1, 1), LeafId(2));
+        assert_eq!(LeafId::new(NodeId(0), 0), LeafId(0));
+        assert_eq!(LeafId::new(NodeId(0), 1), LeafId(1));
+        assert_eq!(LeafId::new(NodeId(1), 1), LeafId(2));
     }
 
     #[test]
