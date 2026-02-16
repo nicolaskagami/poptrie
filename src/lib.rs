@@ -36,6 +36,9 @@ use bitmap::*;
 
 #[derive(Debug, Clone)]
 struct Node<T: Clone> {
+    #[cfg(test)]
+    debug_prefix: Vec<u8>,
+
     /// Bitmap of local nodes
     node_bitmap: u64,
 
@@ -55,11 +58,14 @@ struct Node<T: Clone> {
 
 impl<T: Clone> Node<T> {
     fn new(
+        #[cfg(test)] debug_prefix: Vec<u8>,
         node_offset: u32,
         leaf_offset: u32,
         default_value: Option<T>,
     ) -> Self {
         Node {
+            #[cfg(test)]
+            debug_prefix,
             node_bitmap: 0,
             leaf_bitmap: 0,
             node_offset,
@@ -83,7 +89,13 @@ impl<T: Clone> Poptrie<T> {
     pub fn new() -> Self {
         Poptrie {
             // Starting with an empty root node
-            nodes: vec![Node::new(1, 0, None)],
+            nodes: vec![Node::new(
+                #[cfg(test)]
+                Vec::new(),
+                1,
+                0,
+                None,
+            )],
             leaves: Vec::new(),
         }
     }
@@ -135,8 +147,11 @@ impl<T: Clone> Poptrie<T> {
                 self.nodes.insert(
                     (base_node_offset + local_node_offset) as usize,
                     Node::new(
-                        base_node_offset,
-                        base_leaf_offset,
+                        #[cfg(test)]
+                        [parent_node.debug_prefix.as_slice(), &[local_id]]
+                            .concat(),
+                        next_node_base,
+                        next_leaf_base,
                         parent_default.clone(),
                     ),
                 );
