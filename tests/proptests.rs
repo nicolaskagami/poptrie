@@ -29,14 +29,17 @@ fn prefix_value_vec_strategy<T: Clone + std::fmt::Debug>(
     value_strategy: impl Strategy<Value = T>,
     max_size: usize,
 ) -> impl Strategy<Value = Vec<(Ipv4Prefix, T)>> {
-    prop::collection::vec((ipv4_prefix_strategy(), value_strategy), 0..=max_size)
+    prop::collection::vec(
+        (ipv4_prefix_strategy(), value_strategy),
+        0..=max_size,
+    )
 }
 
 proptest! {
     /// Test that Poptrie matches reference implementation
     #[test]
     fn matches_reference_model(
-        prefixes in prefix_value_vec_strategy(any::<u32>(), 50),
+        prefixes in prefix_value_vec_strategy(any::<u32>(), 500),
         lookup_ips in prop::collection::vec(ipv4_strategy(), 1..=20)
     ) {
         let mut poptrie = Poptrie::new();

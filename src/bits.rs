@@ -27,16 +27,19 @@ pub(crate) fn extract_bits(key: u32, offset: u8, len: u8) -> u32 {
 // (1XXXXX_XX) -> prefix 0000 0001, len 1
 // We can get the the bit index like this:
 // (prefix, len) -> 2^len + prefix
-pub(crate) fn bitmap_id_prefix_u128(prefix: u8, len: u8) -> u8 {
-    (1u8 << len) - 1 + prefix
+//
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct LeafId(u8);
+pub(crate) fn bitmap_id_prefix_u128(prefix: u8, len: u8) -> LeafId {
+    LeafId((1u8 << len) - 1 + prefix)
 }
 
 pub(crate) fn bitmap_contains(bitmap: u64, id: u8) -> bool {
     bitmap & (1 << id) != 0
 }
 
-pub(crate) fn bitmap_contains_u128(bitmap: u128, id: u8) -> bool {
-    bitmap & (1 << id) != 0
+pub(crate) fn bitmap_contains_u128(bitmap: u128, id: LeafId) -> bool {
+    bitmap & (1 << id.0) != 0
 }
 
 pub(crate) fn bitmap_set(bitmap: &mut u64, id: u8) {
@@ -44,8 +47,8 @@ pub(crate) fn bitmap_set(bitmap: &mut u64, id: u8) {
 }
 
 // TODO: Id should be enforced as a type
-pub(crate) fn bitmap_set_u128(bitmap: &mut u128, id: u8) {
-    *bitmap |= 1 << id;
+pub(crate) fn bitmap_set_u128(bitmap: &mut u128, id: LeafId) {
+    *bitmap |= 1 << id.0;
 }
 
 #[allow(dead_code)]
@@ -60,8 +63,25 @@ pub(crate) fn bitmap_index(bitmap: u64, id: u8) -> u32 {
     (bitmap << (63u8 - id)).count_ones()
 }
 
-pub(crate) fn bitmap_index_u128(bitmap: u128, id: u8) -> u32 {
-    (bitmap << (127u8 - id)).count_ones()
+pub(crate) fn bitmap_index_u128(bitmap: u128, id: LeafId) -> u32 {
+    (bitmap << (127u8 - id.0)).count_ones()
+}
+
+/// Returns leaf index for the prefix
+pub(crate) fn find_leaf_lpm(
+    leaf_bitmap: u128,
+    mut local_id: LeafId,
+) -> Option<u32> {
+    loop {
+        if bitmap_contains_u128(leaf_bitmap, local_id) {
+            break Some(bitmap_index_u128(leaf_bitmap, local_id) - 1);
+        }
+        if local_id.0 == 0 {
+            break None;
+        };
+        // Subtract 1 and divide by 2
+        local_id.0 = (local_id.0 - 1) >> 1;
+    }
 }
 
 #[cfg(test)]
@@ -101,9 +121,9 @@ mod tests {
 
     #[test]
     fn bitmap_id_prefix_test() {
-        assert_eq!(bitmap_id_prefix_u128(0, 0), 0);
-        assert_eq!(bitmap_id_prefix_u128(0, 1), 1);
-        assert_eq!(bitmap_id_prefix_u128(1, 1), 2);
+        assert_eq!(bitmap_id_prefix_u128(0, 0), LeafId(0));
+        assert_eq!(bitmap_id_prefix_u128(0, 1), LeafId(1));
+        assert_eq!(bitmap_id_prefix_u128(1, 1), LeafId(2));
     }
 
     #[test]

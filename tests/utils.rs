@@ -55,16 +55,8 @@ pub struct Ipv4Prefix {
 
 impl Ipv4Prefix {
     pub fn new(addr: Ipv4Addr, prefix_len: u8) -> Self {
-        assert!(prefix_len <= 32);
-        // Normalize the address to clear bits beyond prefix_len
-        let mask = if prefix_len == 0 {
-            0u32
-        } else {
-            !0u32 << (32 - prefix_len)
-        };
-        let normalized = u32::from(addr) & mask;
         Self {
-            addr: Ipv4Addr::from(normalized),
+            addr: mask_prefix(addr, prefix_len),
             prefix_len,
         }
     }
