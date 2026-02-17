@@ -73,18 +73,42 @@ impl<T: Clone> Node<T> {
 ///
 /// This is 6 because the 2^6 = 64, which is the biggest size for which a native popcount instruction exists.
 const STRIDE: u8 = 6;
-// TODO: generify for u128
-pub struct Poptrie<K, T>
+
+/// A compressed prefix tree optimized for fast longest prefix match (LPM) lookups.
+///
+/// # Type Parameters
+///
+/// * `K` - The key type (e.g., `u32` for IPv4, `u128` for IPv6)
+/// * `T` - The value type associated with each prefix
+///
+/// # Examples
+///
+/// ```
+/// use poptrie::Poptrie;
+///
+/// // Create a routing table for IPv4 addresses
+/// let mut trie = Poptrie::<u32, &str>::new();
+///
+/// // Insert prefixes with their associated values
+/// trie.insert(u32::from_be_bytes([192, 168, 0, 0]), 16, "192.168.0.0/16");
+/// trie.insert(u32::from_be_bytes([192, 168, 1, 0]), 24, "192.168.1.0/24");
+/// trie.insert(u32::from_be_bytes([10, 0, 0, 0]),8, "10.0.0.0/8");
+///
+/// // Perform longest prefix match lookups
+/// assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 1, 5])), Some("192.168.1.0/24"));
+/// assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 2, 5])), Some("192.168.0.0/16"));
+/// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some("10.0.0.0/8"));
+/// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), None);
+/// ```
+pub struct Poptrie<K, V>
 where
     K: Key,
-    T: Clone,
+    V: Clone,
 {
-    nodes: Vec<Node<T>>,
-    leaves: Vec<T>,
+    nodes: Vec<Node<V>>,
+    leaves: Vec<V>,
     _marker: PhantomData<fn(K)>,
 }
-
-// TODO: generify for u128
 
 impl<K, V> Poptrie<K, V>
 where
