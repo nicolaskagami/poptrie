@@ -103,9 +103,9 @@ impl<T: Clone> Poptrie<T> {
         let mut parent_node = &self.nodes[parent_node_index];
 
         // Check if it's in the correct depth
-        // If we use '>', we prefer STRIDE length representations at one level earlier, else we prefer 0 length
-        // Since our default implementation is in place, we can just use '>'
-        while key_length > key_offset + STRIDE {
+        // We MUST use '>=' here to ensure that full strides always direct towards inner nodes.
+        // This is what allows leaves to only encode up to 2^STRIDE entries, with our special representation.
+        while key_length >= key_offset + STRIDE {
             let local_id =
                 NodeId::new(extract_bits(key, key_offset, STRIDE) as u8);
             // Check if there's already one with `local_id`
@@ -116,7 +116,8 @@ impl<T: Clone> Poptrie<T> {
             let node_index = parent_node.node_bitmap.bitmap_index(local_id);
             // If there's no node with `local_id`, insert one
             if !parent_node.node_bitmap.contains(local_id) {
-                let leaf_id = LeafId::new(local_id, STRIDE);
+                // We never look for leaves with full strides, so we start with its parent here.
+                let leaf_id = LeafId::new(local_id, STRIDE).parent();
 
                 // Setting the default value for the new node if there's a leaf that encompasses it
                 // Important not to propagate defaults down when inserting because we aren't updating them.
@@ -226,7 +227,12 @@ impl<T: Clone> Poptrie<T> {
         // (space and insert optimization) Check leaf at local_id and its parent prefixes
         // We start by calculating the prefix index - can be improved
         let remaining_length = min(STRIDE, 32 - key_offset);
-        let local_prefix_id = LeafId::new(local_id, remaining_length);
+        // We never look for leaves with full strides, so we start with its parent if its FULL.
+        let local_prefix_id = if remaining_length == STRIDE {
+            LeafId::new(local_id, remaining_length).parent()
+        } else {
+            LeafId::new(local_id, remaining_length)
+        };
 
         // Check leaves for receding prefixes
         if let Some(leaf_index) =
@@ -264,13 +270,13 @@ impl<T: Clone> Poptrie<T> {
     ) {
         let base_node_offset = self.nodes[parent_node_index].node_base;
         // For every child node
-        for id in 0..=63 {
+        for id in 0..64 {
             let node_id = NodeId::new(id);
             // If it exists
             if self.nodes[parent_node_index].node_bitmap.contains(node_id) {
                 // Check if there is a leaf node in this parent node that would be more specific to this key
-                // Let's get the base prefix of this child (id) and check if there are leaves
-                let local_leaf_id = LeafId::new(node_id, STRIDE);
+                // We check for leaves on the parent, which can be of at most STRIDE - 1 length.
+                let local_leaf_id = LeafId::new(node_id, STRIDE).parent();
                 let local_node_offset = self.nodes[parent_node_index]
                     .node_bitmap
                     .bitmap_index(node_id);

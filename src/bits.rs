@@ -38,10 +38,11 @@ impl LeafId {
 
 /// Bitmap for storing leaf IDs.
 ///
-/// It's currently a `u128` because we need to store up to `2^(MAX_LEN + 1)` leaf IDs and we're currently using a `STRIDE` of `6`.
-/// This is so we can store the significant length along with the prefix of the leaf even when it's not the full stride.
+/// We store the significant length along with the prefix of the leaf into an integer.
+/// We don't need to set it to `u128` at the moment because we reject full STRIDEs, those should always go into their own node, even if it becomes a stride of 0.
+/// This crucially halves the representational space, allowing us to use the most effective popcount implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct LeafBitmap(u128);
+pub(crate) struct LeafBitmap(u64);
 impl LeafBitmap {
     /// Creates a new unpopulated `LeafBitmap`.
     pub fn new() -> Self {
@@ -53,7 +54,7 @@ impl LeafBitmap {
         if id.0 == 0 {
             0
         } else {
-            (self.0 << (128u8 - id.0)).count_ones()
+            (self.0 << (64u8 - id.0)).count_ones()
         }
     }
 
