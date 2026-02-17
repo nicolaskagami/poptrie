@@ -19,13 +19,15 @@
 
 extern crate alloc;
 
-pub mod bits;
+mod bitmap;
+pub mod key;
 
 use alloc::vec;
 use alloc::vec::Vec;
-use bits::*;
+use bitmap::*;
 use core::cmp::min;
 use core::marker::PhantomData;
+use key::*;
 
 #[derive(Debug, Clone)]
 struct Node<T: Clone> {
@@ -33,10 +35,10 @@ struct Node<T: Clone> {
     debug_prefix: Vec<NodeId>,
 
     /// Bitmap of local nodes
-    node_bitmap: NodeBitmap,
+    node_bitmap: Bitmap<NodeId>,
 
     /// Bitmap of local prefixes
-    leaf_bitmap: LeafBitmap,
+    leaf_bitmap: Bitmap<LeafId>,
 
     /// Offset of the first node pointed by this node
     node_base: u32,
@@ -58,8 +60,8 @@ impl<T: Clone> Node<T> {
         Node {
             #[cfg(test)]
             debug_prefix,
-            node_bitmap: NodeBitmap::new(),
-            leaf_bitmap: LeafBitmap::new(),
+            node_bitmap: Bitmap::new(),
+            leaf_bitmap: Bitmap::new(),
             node_base,
             leaf_base,
             default_value,
