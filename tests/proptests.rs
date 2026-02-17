@@ -1,7 +1,7 @@
 //! Proptests for Poptrie
 mod utils;
 use core::net::Ipv4Addr;
-use poptrie::{Poptrie, Prefix};
+use poptrie::Poptrie;
 use proptest::prelude::*;
 use utils::Ipv4Prefix;
 
@@ -46,7 +46,7 @@ proptest! {
 
         // Insert all prefixes into both implementations
         for (prefix, value) in &prefixes {
-            poptrie.insert(Prefix(prefix.addr.to_bits(),prefix.prefix_len), *value);
+            poptrie.insert(prefix.addr.to_bits(),prefix.prefix_len, *value);
             reference.insert(prefix.addr.clone(), prefix.prefix_len, *value);
         }
 

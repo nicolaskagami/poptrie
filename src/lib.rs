@@ -25,6 +25,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bits::*;
 use core::cmp::min;
+use core::marker::PhantomData;
 
 #[derive(Debug, Clone)]
 struct Node<T: Clone> {
@@ -71,17 +72,25 @@ impl<T: Clone> Node<T> {
 /// This is 6 because the 2^6 = 64, which is the biggest size for which a native popcount instruction exists.
 const STRIDE: u8 = 6;
 // TODO: generify for u128
-pub struct Poptrie<T: Clone> {
+pub struct Poptrie<K, T>
+where
+    K: Key,
+    T: Clone,
+{
     nodes: Vec<Node<T>>,
     leaves: Vec<T>,
+    _marker: PhantomData<fn(K)>,
 }
 
 // TODO: generify for u128
-pub struct Prefix(pub u32, pub u8);
 
-impl<T: Clone> Poptrie<T> {
+impl<K, V> Poptrie<K, V>
+where
+    K: Key,
+    V: Clone,
+{
     pub fn new() -> Self {
-        Poptrie {
+        Poptrie::<K, V> {
             // Starting with an empty root node
             nodes: vec![Node::new(
                 #[cfg(test)]
@@ -91,12 +100,13 @@ impl<T: Clone> Poptrie<T> {
                 None,
             )],
             leaves: Vec::new(),
+            _marker: PhantomData,
         }
     }
 
     /// Insert a value into the trie associated with the given prefix.
-    pub fn insert(&mut self, prefix: Prefix, value: T) {
-        let Prefix(key, key_length) = prefix;
+    pub fn insert(&mut self, key: K, key_length: u8, value: V) {
+        assert!(key_length <= K::BITS);
         let mut key_offset = 0;
         // First node is root
         let mut parent_node_index = 0;
@@ -106,8 +116,7 @@ impl<T: Clone> Poptrie<T> {
         // We MUST use '>=' here to ensure that full strides always direct towards inner nodes.
         // This is what allows leaves to only encode up to 2^STRIDE entries, with our special representation.
         while key_length >= key_offset + STRIDE {
-            let local_id =
-                NodeId::new(extract_bits(key, key_offset, STRIDE) as u8);
+            let local_id = NodeId::new(extract_bits(key, key_offset, STRIDE));
             // Check if there's already one with `local_id`
             let leaf_base = parent_node.leaf_base;
             let node_base = parent_node.node_base;
@@ -166,7 +175,7 @@ impl<T: Clone> Poptrie<T> {
         // Can't consume a whole STRIDE, so we handle the remainder.
         let remaining_length = key_length - key_offset;
         let node_id =
-            NodeId::new(extract_bits(key, key_offset, remaining_length) as u8);
+            NodeId::new(extract_bits(key, key_offset, remaining_length));
         let leaf_id = LeafId::new(node_id, remaining_length);
 
         // TODO: Keep only indices in leaves
@@ -195,14 +204,13 @@ impl<T: Clone> Poptrie<T> {
     }
 
     /// Lookup a key in the trie, performing longest-prefix match.
-    pub fn lookup(&self, key: u32) -> Option<T> {
+    pub fn lookup(&self, key: K) -> Option<V> {
         let mut key_offset = 0;
         // First node is root
         let mut parent_node_index = 0;
         let mut parent_node = &self.nodes[parent_node_index];
         let mut default = parent_node.default_value.clone();
-        let mut local_id =
-            NodeId::new(extract_bits(key, key_offset, STRIDE) as u8);
+        let mut local_id = NodeId::new(extract_bits(key, key_offset, STRIDE));
 
         // Should try internal nodes first, apparently. Shouldn't be a problem considering our default implementation.
         while parent_node.node_bitmap.contains(local_id) {
@@ -221,12 +229,12 @@ impl<T: Clone> Poptrie<T> {
 
             // Update key offset and local ID
             key_offset += STRIDE;
-            local_id = NodeId::new(extract_bits(key, key_offset, STRIDE) as u8);
+            local_id = NodeId::new(extract_bits(key, key_offset, STRIDE));
         }
 
         // (space and insert optimization) Check leaf at local_id and its parent prefixes
         // We start by calculating the prefix index - can be improved
-        let remaining_length = min(STRIDE, 32 - key_offset);
+        let remaining_length = min(STRIDE, K::BITS - key_offset);
         // We never look for leaves with full strides, so we start with its parent if its FULL.
         let local_prefix_id = if remaining_length == STRIDE {
             LeafId::new(local_id, remaining_length).parent()
@@ -299,10 +307,10 @@ impl<T: Clone> Poptrie<T> {
 
 #[test]
 fn test_find_leaf() {
-    let mut trie = Poptrie::new();
-    trie.insert(Prefix(u32::from_be_bytes([192, 168, 0, 0]), 30), 0);
-    trie.insert(Prefix(u32::from_be_bytes([192, 168, 0, 1]), 32), 1);
-    trie.insert(Prefix(u32::from_be_bytes([192, 168, 0, 2]), 32), 2);
+    let mut trie = Poptrie::<u32, u32>::new();
+    trie.insert(u32::from_be_bytes([192, 168, 0, 0]), 30, 0);
+    trie.insert(u32::from_be_bytes([192, 168, 0, 1]), 32, 1);
+    trie.insert(u32::from_be_bytes([192, 168, 0, 2]), 32, 2);
 
     assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 0])), Some(0));
     assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 1])), Some(1));
@@ -312,9 +320,9 @@ fn test_find_leaf() {
 
 #[test]
 fn one_level_before() {
-    let mut trie = Poptrie::new();
-    trie.insert(Prefix(0b000001_000001_000001_000001_000000_00, 25), 0);
-    trie.insert(Prefix(0b000001_000001_000001_000001_000001_01, 32), 1);
+    let mut trie = Poptrie::<u32, u32>::new();
+    trie.insert(0b000001_000001_000001_000001_000000_00, 25, 0);
+    trie.insert(0b000001_000001_000001_000001_000001_01, 32, 1);
     assert_eq!(
         trie.lookup(0b000001_000001_000001_000001_000001_00),
         Some(0)
@@ -328,25 +336,25 @@ fn one_level_before() {
 #[test]
 fn base_default() {
     // Levels 1 and 2
-    let mut trie = Poptrie::new();
-    trie.insert(Prefix(0b000001_000000_000000_000000_000000_00, 6), 0);
-    trie.insert(Prefix(0b000000_000000_000000_000000_000000_00, 12), 1);
+    let mut trie = Poptrie::<u32, u32>::new();
+    trie.insert(0b000001_000000_000000_000000_000000_00, 6, 0);
+    trie.insert(0b000000_000000_000000_000000_000000_00, 12, 1);
     assert_eq!(
         trie.lookup(0b000001_000000_000000_000000_000000_00),
         Some(0)
     );
     // Levels 2 and 3
-    let mut trie = Poptrie::new();
-    trie.insert(Prefix(0b000000_110000_000000_000000_000000_00, 12), 0);
-    trie.insert(Prefix(0b000000_000000_000000_000000_000000_00, 18), 1);
+    let mut trie = Poptrie::<u32, u32>::new();
+    trie.insert(0b000000_110000_000000_000000_000000_00, 12, 0);
+    trie.insert(0b000000_000000_000000_000000_000000_00, 18, 1);
     assert_eq!(
         trie.lookup(0b000000_110000_000000_000000_000000_00),
         Some(0)
     );
     // Levels 1 and 2 (non-full length)
-    let mut trie = Poptrie::new();
-    trie.insert(Prefix(0b001100_000000_000000_000000_000000_00, 10), 0);
-    trie.insert(Prefix(0b000000_000000_000000_000000_000000_00, 1), 1);
+    let mut trie = Poptrie::<u32, u32>::new();
+    trie.insert(0b001100_000000_000000_000000_000000_00, 10, 0);
+    trie.insert(0b000000_000000_000000_000000_000000_00, 1, 1);
     assert_eq!(
         trie.lookup(0b001100_000100_000000_000000_000000_00),
         Some(1)
@@ -355,10 +363,10 @@ fn base_default() {
 
 #[test]
 fn default_overwrite() {
-    let mut trie = Poptrie::new();
-    trie.insert(Prefix(0b000000_000000_000000_000000_000000_00, 0), 0);
-    trie.insert(Prefix(0b000001_000001_000000_000000_000000_00, 15), 2);
-    trie.insert(Prefix(0b000000_000000_000000_000000_000000_00, 0), 1);
+    let mut trie = Poptrie::<u32, u32>::new();
+    trie.insert(0b000000_000000_000000_000000_000000_00, 0, 0);
+    trie.insert(0b000001_000001_000000_000000_000000_00, 15, 2);
+    trie.insert(0b000000_000000_000000_000000_000000_00, 0, 1);
     assert_eq!(
         trie.lookup(0b000001_000001_001000_000000_000000_00),
         Some(1)
