@@ -1,5 +1,7 @@
 use core::marker::PhantomData;
 
+use alloc::collections::btree_map::BTreeMap;
+
 /// A generic bitmap for storing u8 encoded ids of 0..63
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Bitmap<T>
@@ -53,38 +55,12 @@ where
 }
 
 /// A unique identifier for a leaf node in the IP trie.
-///
-/// The ID is a mapping of the last segment of the prefix, i.e. the last "stride", including the valid length.
-/// It's calculated as follows: `f(prefix, len) = 2^len + prefix`.
-/// This is so that the parent prefix can be directly calculated as: `parent` = `(leaf_id - 1) >> 1`, just like in a heap.
-/// - Valid ranges are `0..2^(MAX_LEN + 1)`.
-/// - `prefix` is the numerical representation of the last valid segment of the prefix, not a mask.
-/// We don't need to set its bitmap to `u128` at the moment because we reject full STRIDEs, those should always go into their own node, even if it becomes a stride of 0.
-/// This crucially halves the representational space, allowing us to use the most effective popcount implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct LeafId(u8);
 impl LeafId {
     /// Creates a new `LeafId` from a prefix and length.
-    pub fn new(prefix: NodeId, len: u8) -> Self {
-        LeafId((1u8 << len) - 1 + prefix.0)
-    }
-
-    /// Returns the parent `LeafId`.
-    pub(crate) fn parent(&self) -> Self {
-        LeafId((self.0 - 1) >> 1)
-    }
-}
-
-impl Bitmap<LeafId> {
-    /// Returns internal index for the longest prefix match of a leaf ID.
-    pub(crate) fn find_leaf_lpm(&self, mut local_id: LeafId) -> Option<u32> {
-        while !self.contains(local_id) {
-            if local_id.0 == 0 {
-                return None;
-            }
-            local_id = local_id.parent();
-        }
-        Some(self.bitmap_index(local_id))
+    pub(crate) fn new(id: u8) -> LeafId {
+        LeafId(id)
     }
 }
 
@@ -94,9 +70,63 @@ impl Into<u8> for LeafId {
     }
 }
 
+impl Bitmap<LeafId> {
+    /// Returns the index of leaf attributed to the given `LeafId` using leafvec optimization
+    #[inline(always)] // Particularly effective to inline
+    pub(crate) fn leafvec_index(&self, id: LeafId) -> u32 {
+        (self.bits << (63u8 - id.0)).count_ones() - 1
+    }
+}
+
+/// A unique identifier for a leaf node in the IP trie.
+///
+/// The ID is a mapping of the last segment of the prefix, i.e. the last "stride", including the valid length.
+/// It's calculated as follows: `f(prefix, len) = 2^len + prefix`.
+/// This is so that the parent prefix can be directly calculated as: `parent` = `(leaf_id - 1) >> 1`, just like in a heap.
+/// - Valid ranges are `0..2^(MAX_LEN + 1)`.
+/// - `prefix` is the numerical representation of the last valid segment of the prefix, not a mask.
+/// We don't need to set its bitmap to `u128` at the moment because we reject full STRIDEs, those should always go into their own node, even if it becomes a stride of 0.
+/// This crucially halves the representational space, allowing us to use the most effective popcount implementation.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct PrefixId(u8);
+impl PrefixId {
+    /// Creates a new `PrefixId` from a prefix and length.
+    pub fn new(prefix: u8, len: u8) -> Self {
+        PrefixId((1u8 << len) - 1 + prefix)
+    }
+
+    /// Returns the parent `LeafId`.
+    pub(crate) fn parent(&self) -> Self {
+        PrefixId((self.0 - 1) >> 1)
+    }
+}
+
+/// Returns internal index for the longest prefix match of a leaf ID.
+#[inline(always)]
+pub(crate) fn find_leaf_lpm(
+    tree: &BTreeMap<PrefixId, u32>,
+    mut local_id: PrefixId,
+) -> Option<u32> {
+    while !tree.contains_key(&local_id) {
+        if local_id.0 == 0 {
+            return None;
+        }
+        local_id = local_id.parent();
+    }
+    Some(tree[&local_id])
+}
+
+impl Into<u8> for PrefixId {
+    fn into(self) -> u8 {
+        self.0
+    }
+}
+
 /// A unique identifier for a node in the IP trie.
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct NodeId(u8);
+pub(crate) struct NodeId(pub(crate) u8);
 impl NodeId {
     pub(crate) fn new(id: u8) -> NodeId {
         NodeId(id)
@@ -137,8 +167,30 @@ mod tests {
 
     #[test]
     fn bitmap_id_prefix_test() {
-        assert_eq!(LeafId::new(NodeId(0), 0), LeafId(0));
-        assert_eq!(LeafId::new(NodeId(0), 1), LeafId(1));
-        assert_eq!(LeafId::new(NodeId(1), 1), LeafId(2));
+        assert_eq!(PrefixId::new(0, 0), PrefixId(0));
+        assert_eq!(PrefixId::new(0, 1), PrefixId(1));
+        assert_eq!(PrefixId::new(1, 1), PrefixId(2));
+    }
+
+    #[test]
+    fn test_find_lpm() {
+        let mut tree = BTreeMap::<PrefixId, u32>::new();
+        // Insert 1/1 prefix
+        tree.insert(PrefixId::new(1, 1), 1);
+        // Should see itself and its descendants
+        assert_eq!(find_leaf_lpm(&tree, PrefixId::new(1, 1)), Some(1));
+        assert_eq!(find_leaf_lpm(&tree, PrefixId::new(2, 2)), Some(1));
+        assert_eq!(find_leaf_lpm(&tree, PrefixId::new(3, 2)), Some(1));
+        assert_eq!(find_leaf_lpm(&tree, PrefixId::new(4, 3)), Some(1));
+        // Insert 2/2 prefix
+        tree.insert(PrefixId::new(2, 2), 2);
+        // Should overwrite the longer prefix
+        assert_eq!(find_leaf_lpm(&tree, PrefixId::new(2, 2)), Some(2));
+        assert_eq!(find_leaf_lpm(&tree, PrefixId::new(4, 3)), Some(2));
+        // Other branch (3/2) should default to first
+        assert_eq!(find_leaf_lpm(&tree, PrefixId::new(1, 1)), Some(1));
+        assert_eq!(find_leaf_lpm(&tree, PrefixId::new(3, 2)), Some(1));
+        // None should cover the 0/1
+        assert_eq!(find_leaf_lpm(&tree, PrefixId::new(0, 1)), None);
     }
 }
