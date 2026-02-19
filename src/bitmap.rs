@@ -2,6 +2,8 @@ use core::marker::PhantomData;
 
 use alloc::collections::btree_map::BTreeMap;
 
+use crate::key::{Key, extract_bits, extract_bits_saturated};
+
 /// A generic bitmap for storing u8 encoded ids of 0..63
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Bitmap<T>
@@ -54,31 +56,16 @@ where
     }
 }
 
-/// A unique identifier for a leaf node in the IP trie.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct LeafId(u8);
-impl LeafId {
-    /// Creates a new `LeafId` from a prefix and length.
-    pub(crate) fn new(id: u8) -> LeafId {
-        LeafId(id)
-    }
-}
-
-impl Into<u8> for LeafId {
-    fn into(self) -> u8 {
-        self.0
-    }
-}
-
-impl Bitmap<LeafId> {
+impl Bitmap<StrideId> {
     /// Returns the index of leaf attributed to the given `LeafId` using leafvec optimization
+    // Actually slower than `bitmap_index`
     #[inline(always)] // Particularly effective to inline
-    pub(crate) fn leafvec_index(&self, id: LeafId) -> u32 {
+    pub(crate) fn leafvec_index(&self, id: StrideId) -> u32 {
         (self.bits << (63u8 - id.0)).count_ones() - 1
     }
 }
 
-/// A unique identifier for a leaf node in the IP trie.
+/// A unique identifier for a prefix in the poptrie.
 ///
 /// The ID is a mapping of the last segment of the prefix, i.e. the last "stride", including the valid length.
 /// It's calculated as follows: `f(prefix, len) = 2^len + prefix`.
@@ -92,11 +79,16 @@ impl Bitmap<LeafId> {
 pub(crate) struct PrefixId(u8);
 impl PrefixId {
     /// Creates a new `PrefixId` from a prefix and length.
-    pub fn new(prefix: u8, len: u8) -> Self {
+    pub(crate) fn new(prefix: u8, len: u8) -> Self {
         PrefixId((1u8 << len) - 1 + prefix)
     }
 
-    /// Returns the parent `LeafId`.
+    pub(crate) fn from_key<K: Key>(key: K, key_offset: u8, stride: u8) -> Self {
+        let prefix = extract_bits_saturated(key, key_offset, stride);
+        PrefixId::new(prefix, stride)
+    }
+
+    /// Returns the parent `PrefixId`.
     pub(crate) fn parent(&self) -> Self {
         PrefixId((self.0 - 1) >> 1)
     }
@@ -104,10 +96,13 @@ impl PrefixId {
 
 /// Returns internal index for the longest prefix match of a leaf ID.
 #[inline(always)]
-pub(crate) fn find_leaf_lpm(
-    tree: &BTreeMap<PrefixId, u32>,
+pub(crate) fn find_leaf_lpm<T>(
+    tree: &BTreeMap<PrefixId, T>,
     mut local_id: PrefixId,
-) -> Option<u32> {
+) -> Option<T>
+where
+    T: Copy,
+{
     while !tree.contains_key(&local_id) {
         if local_id.0 == 0 {
             return None;
@@ -117,23 +112,21 @@ pub(crate) fn find_leaf_lpm(
     Some(tree[&local_id])
 }
 
-impl Into<u8> for PrefixId {
-    fn into(self) -> u8 {
-        self.0
-    }
-}
-
-/// A unique identifier for a node in the IP trie.
+/// A unique identifier for a stride in the poptrie.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct NodeId(pub(crate) u8);
-impl NodeId {
-    pub(crate) fn new(id: u8) -> NodeId {
-        NodeId(id)
+pub(crate) struct StrideId(pub(crate) u8);
+impl StrideId {
+    pub(crate) fn from_key<K: Key>(
+        key: K,
+        key_offset: u8,
+        length: u8,
+    ) -> StrideId {
+        StrideId(extract_bits(key, key_offset, length))
     }
 }
 
-impl Into<u8> for NodeId {
+impl Into<u8> for StrideId {
     fn into(self) -> u8 {
         self.0
     }
