@@ -30,43 +30,7 @@ use alloc::vec::Vec;
 use bitmap::*;
 use core::marker::PhantomData;
 use key::*;
-
-use crate::value_index::ValueIndex;
-
-#[derive(Debug, Clone)]
-struct Node {
-    #[cfg(test)]
-    debug_prefix: Vec<StrideId>,
-
-    /// Bitmap of local nodes
-    node_bitmap: Bitmap<StrideId>,
-
-    /// Bitmap of local prefixes
-    leaf_bitmap: Bitmap<StrideId>,
-
-    /// Offset of the first node pointed by this node
-    node_base: u32,
-
-    /// Offset of the first leaf pointed by this node
-    leaf_base: u32,
-}
-
-impl Node {
-    fn new(
-        #[cfg(test)] debug_prefix: Vec<StrideId>,
-        node_base: u32,
-        leaf_base: u32,
-    ) -> Self {
-        Node {
-            #[cfg(test)]
-            debug_prefix,
-            node_bitmap: Bitmap::new(),
-            leaf_bitmap: Bitmap::new(),
-            node_base,
-            leaf_base,
-        }
-    }
-}
+use value_index::ValueIndex;
 
 /// The maximum number of bits we can consume from the prefix at a time.
 ///
@@ -123,6 +87,7 @@ impl<K, V> Poptrie<K, V>
 where
     K: Key,
 {
+    /// Construct a new, empty poptrie.
     pub fn new() -> Self {
         let mut root_node = Node::new(
             #[cfg(test)]
@@ -277,6 +242,89 @@ where
         value_index.get().map(|i| &self.values[i as usize])
     }
 
+    /// Returns `true` if the poptrie contains a value for the given key.
+    pub fn contains_key(&self, key: K, key_length: u8) -> bool {
+        // Find the final parent node and prefix id
+        let (parent_node, prefix_id, _) =
+            self.find_parent_node(key, key_length);
+
+        self.reference[parent_node].contains_key(&prefix_id)
+    }
+
+    /// Removes and returns the value `V` associated with the given key.
+    pub fn remove(&mut self, key: K, key_length: u8) -> Option<V> {
+        // Find the final parent node and prefix id
+        let (parent_node, prefix_id, default_value_index) =
+            self.find_parent_node(key, key_length);
+
+        self.reference[parent_node].remove(&prefix_id).map(|v| {
+            // Update the leaf ranges
+            if self.calculate_leaf_ranges(parent_node, default_value_index) {
+                self.update_children(parent_node, default_value_index);
+            }
+
+            // Update the value indices in all the leaves and references
+            for higher_v in self
+                .leaves
+                .iter_mut()
+                .chain(self.reference.iter_mut().flat_map(|s| s.values_mut()))
+                .filter(|higher_v| **higher_v > v)
+            {
+                higher_v.decrement();
+            }
+
+            // SAFETY: The value is guaranteed to exist because it was just removed from the reference map.
+            self.values.remove(v.get().unwrap())
+        })
+    }
+
+    /// Find the final parent node and the `PrefixId` of the given key.
+    fn find_parent_node(
+        &self,
+        key: K,
+        key_length: u8,
+    ) -> (usize, PrefixId, ValueIndex) {
+        // Traverse the trie similarly to a insert but check the reference
+        let mut key_offset = 0;
+        let mut parent_node_index = 0;
+        let mut parent_node = &self.nodes[parent_node_index];
+        let mut default_value_index = ValueIndex::NONE;
+
+        while key_length >= key_offset + STRIDE {
+            let local_id = StrideId::from_key(key, key_offset, STRIDE);
+
+            // Find the default from the parent
+            let prefix_id = PrefixId::new(local_id.0, STRIDE).parent();
+            if let Some(default_index) =
+                find_leaf_lpm(&self.reference[parent_node_index], prefix_id)
+            {
+                default_value_index = default_index;
+            }
+
+            // Check if there's already a node with `local_id`
+            if !parent_node.node_bitmap.contains(local_id) {
+                // If there's no node with `local_id`, break out
+                panic!();
+            }
+
+            // Calculate the full node index
+            parent_node_index = (parent_node.node_base
+                + parent_node.node_bitmap.bitmap_index(local_id))
+                as usize;
+
+            // Now this node is the next parent node
+            parent_node = &self.nodes[parent_node_index];
+
+            // Advance the key offset
+            key_offset += STRIDE;
+        }
+
+        let remaining_length = key_length - key_offset;
+        let prefix_id = PrefixId::from_key(key, key_offset, remaining_length);
+
+        (parent_node_index, prefix_id, default_value_index)
+    }
+
     /// Find the next base node and leaf node index for a given parent node index.
     ///
     /// Used for inserting a new node while keeping the order of nodes.
@@ -388,6 +436,43 @@ where
                     self.update_children(full_child_node_index, default_value);
                 }
             }
+        }
+    }
+}
+
+/// An internal node in the trie
+#[derive(Debug, Clone)]
+struct Node {
+    /// Debug field for keeping track of stride ascendancy.
+    #[cfg(test)]
+    debug_prefix: Vec<StrideId>,
+
+    /// Bitmap of local nodes
+    node_bitmap: Bitmap<StrideId>,
+
+    /// Bitmap of local prefixes
+    leaf_bitmap: Bitmap<StrideId>,
+
+    /// Offset of the first node pointed by this node
+    node_base: u32,
+
+    /// Offset of the first leaf pointed by this node
+    leaf_base: u32,
+}
+
+impl Node {
+    fn new(
+        #[cfg(test)] debug_prefix: Vec<StrideId>,
+        node_base: u32,
+        leaf_base: u32,
+    ) -> Self {
+        Node {
+            #[cfg(test)]
+            debug_prefix,
+            node_bitmap: Bitmap::new(),
+            leaf_bitmap: Bitmap::new(),
+            node_base,
+            leaf_base,
         }
     }
 }

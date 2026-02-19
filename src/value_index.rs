@@ -3,7 +3,7 @@
 /// This is a self-rolled option type to signal a missing value without extra space.
 /// We use the highest representable value to signal `None` so we don't have to subtract.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
 pub(crate) struct ValueIndex(u32);
 
 impl ValueIndex {
@@ -19,5 +19,11 @@ impl ValueIndex {
 
     pub(crate) fn get(self) -> Option<usize> {
         (self.is_some()).then_some(self.0 as usize)
+    }
+
+    pub(crate) fn decrement(&mut self) {
+        if self.is_some() {
+            self.0 -= 1;
+        }
     }
 }
