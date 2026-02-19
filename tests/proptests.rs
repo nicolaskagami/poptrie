@@ -44,6 +44,10 @@ proptest! {
         let mut poptrie = Poptrie::new();
         let mut reference = HashMapLpm::new();
 
+        // Always insert default 0
+        poptrie.insert(0, 0, 0);
+        reference.insert(Ipv4Addr::new(0, 0, 0, 0), 0, 0);
+
         // Insert all prefixes into both implementations
         for (prefix, value) in &prefixes {
             poptrie.insert(prefix.addr.to_bits(),prefix.prefix_len, *value);

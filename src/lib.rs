@@ -4,58 +4,58 @@
 //! # Implementation Details
 //! - Pure Rust, `no_std` implementation, requiring `alloc`.
 //! - No external dependencies.
+//! - Using leafvec optimization (section 3.3 of the paper).
 //! - Not using Direct Pointing (section 3.4 of the paper).
 //! - Not using buddy memory allocation.
 //! - Not using incremental update (section 3.5 of the paper).
 //! - Not using an auxiliary radix tree.
 //! - Using an original algorithm for storing prefixes that saves space and insertion time.
 //! - Using an original algorithm for keeping and updating default values.
-// TODO: make generic over IPv4 and IPv6
 // TODO: make stride generic
 // TODO: implement longer strides (CP-trie)
 // TODO: implement direct pointing (generic)
 // TODO: newtypes for dealing with bitmaps? Always one base/offset, one index and ids
+
 #![no_std]
 
 extern crate alloc;
 
 mod bitmap;
 pub mod key;
+mod value_index;
 
+use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitmap::*;
-use core::cmp::min;
 use core::marker::PhantomData;
 use key::*;
 
+use crate::value_index::ValueIndex;
+
 #[derive(Debug, Clone)]
-struct Node<T: Clone> {
+struct Node {
     #[cfg(test)]
-    debug_prefix: Vec<NodeId>,
+    debug_prefix: Vec<StrideId>,
 
     /// Bitmap of local nodes
-    node_bitmap: Bitmap<NodeId>,
+    node_bitmap: Bitmap<StrideId>,
 
     /// Bitmap of local prefixes
-    leaf_bitmap: Bitmap<LeafId>,
+    leaf_bitmap: Bitmap<StrideId>,
 
     /// Offset of the first node pointed by this node
     node_base: u32,
 
     /// Offset of the first leaf pointed by this node
     leaf_base: u32,
-
-    /// The default value for this node
-    default_value: Option<T>,
 }
 
-impl<T: Clone> Node<T> {
+impl Node {
     fn new(
-        #[cfg(test)] debug_prefix: Vec<NodeId>,
+        #[cfg(test)] debug_prefix: Vec<StrideId>,
         node_base: u32,
         leaf_base: u32,
-        default_value: Option<T>,
     ) -> Self {
         Node {
             #[cfg(test)]
@@ -64,7 +64,6 @@ impl<T: Clone> Node<T> {
             leaf_bitmap: Bitmap::new(),
             node_base,
             leaf_base,
-            default_value,
         }
     }
 }
@@ -105,27 +104,41 @@ where
     K: Key,
     V: Clone,
 {
-    nodes: Vec<Node<V>>,
-    leaves: Vec<V>,
+    /// The internal nodes of the trie.
+    nodes: Vec<Node>,
+
+    /// The leaves of the trie, pointing to indices in the values vector.
+    leaves: Vec<ValueIndex>,
+
+    /// The values associated with the prefixes.
+    values: Vec<V>,
+
+    /// References for leaves, only used when editing the trie.
+    reference: Vec<BTreeMap<PrefixId, ValueIndex>>,
+
+    /// The marker for `K`.
     _marker: PhantomData<fn(K)>,
 }
 
 impl<K, V> Poptrie<K, V>
 where
     K: Key,
-    V: Clone,
+    V: Clone + Default,
 {
     pub fn new() -> Self {
+        let mut root_node = Node::new(
+            #[cfg(test)]
+            Vec::new(),
+            1,
+            0,
+        );
+        // Register the default value bit
+        root_node.leaf_bitmap.set(StrideId(0));
         Poptrie::<K, V> {
-            // Starting with an empty root node
-            nodes: vec![Node::new(
-                #[cfg(test)]
-                Vec::new(),
-                1,
-                0,
-                None,
-            )],
-            leaves: Vec::new(),
+            values: Vec::new(),
+            nodes: vec![root_node], // Start with a root node
+            reference: vec![BTreeMap::new()], // Root's reference
+            leaves: vec![ValueIndex::NONE], // Global default value index
             _marker: PhantomData,
         }
     }
@@ -133,65 +146,85 @@ where
     /// Insert a value into the trie associated with the given prefix.
     pub fn insert(&mut self, key: K, key_length: u8, value: V) {
         assert!(key_length <= K::BITS);
+        // Store the value in the values vector and get its index
+        self.values.push(value);
+        let current_value_index =
+            ValueIndex::new((self.values.len() - 1) as u32);
+
+        // Keep track of the default value
+        let mut default_value_index = ValueIndex::NONE;
+
+        // Keep track of where we are in the key
         let mut key_offset = 0;
+
         // First node is root
         let mut parent_node_index = 0;
         let mut parent_node = &self.nodes[parent_node_index];
 
         // Check if it's in the correct depth
         // We MUST use '>=' here to ensure that full strides always direct towards inner nodes.
-        // This is what allows leaves to only encode up to 2^STRIDE entries, with our special representation.
         while key_length >= key_offset + STRIDE {
-            let local_id = NodeId::new(extract_bits(key, key_offset, STRIDE));
-            // Check if there's already one with `local_id`
-            let leaf_base = parent_node.leaf_base;
-            let node_base = parent_node.node_base;
+            let local_id = StrideId::from_key(key, key_offset, STRIDE);
+
+            // Calculate the full node index
+            let full_node_index = (parent_node.node_base
+                + parent_node.node_bitmap.bitmap_index(local_id))
+                as usize;
+
+            // Find the default from the parent
+            let prefix_id = PrefixId::new(local_id.0, STRIDE).parent();
+            if let Some(default_index) =
+                find_leaf_lpm(&self.reference[parent_node_index], prefix_id)
+            {
+                default_value_index = default_index;
+            }
 
             // Check if there's already a node with `local_id`
-            let node_index = parent_node.node_bitmap.bitmap_index(local_id);
-            // If there's no node with `local_id`, insert one
             if !parent_node.node_bitmap.contains(local_id) {
-                // We never look for leaves with full strides, so we start with its parent here.
-                let leaf_id = LeafId::new(local_id, STRIDE).parent();
+                // If there's no node with `local_id`, insert one
 
-                // Setting the default value for the new node if there's a leaf that encompasses it
-                // Important not to propagate defaults down when inserting because we aren't updating them.
-                let parent_default = parent_node
-                    .leaf_bitmap
-                    .find_leaf_lpm(leaf_id)
-                    .map(|leaf_index| {
-                        self.leaves[(leaf_base + leaf_index) as usize].clone()
-                    });
-
-                // Calculate the next base
+                // Calculate the next bases
                 let (next_node_base, next_leaf_base) =
-                    self.find_next_base((node_base + node_index) as usize);
+                    self.find_next_base(full_node_index);
 
-                // Getting the leaf end of the last one
                 self.nodes.insert(
-                    (node_base + node_index) as usize,
+                    full_node_index,
                     Node::new(
                         #[cfg(test)]
                         [parent_node.debug_prefix.as_slice(), &[local_id]]
                             .concat(),
                         next_node_base,
                         next_leaf_base,
-                        parent_default,
                     ),
                 );
 
                 // Set the node bitmap for the new node
                 self.nodes[parent_node_index].node_bitmap.set(local_id);
 
-                // TODO: improve this updating (could be lazy)
                 // Increment every single node after parent_node_index
                 for i in parent_node_index + 1..self.nodes.len() {
                     self.nodes[i].node_base += 1;
                 }
+
+                // Also insert into reference
+                self.reference.insert(full_node_index, BTreeMap::new());
+
+                // Insert the default leaf, always at the base, representing the full range
+                self.leaves
+                    .insert(next_leaf_base as usize, default_value_index);
+
+                // Update offsets after the index
+                // Now we can insert leaves - It's relatively slow having to shift everything
+                for i in full_node_index + 1..self.nodes.len() {
+                    self.nodes[i].leaf_base += 1;
+                }
+
+                // Set the default leaf at 0
+                self.nodes[full_node_index].leaf_bitmap.set(StrideId(0));
             }
 
             // Now this node is the next parent node
-            parent_node_index = (node_base + node_index) as usize;
+            parent_node_index = full_node_index;
             parent_node = &self.nodes[parent_node_index];
 
             // Advance the key offset
@@ -200,33 +233,17 @@ where
 
         // Can't consume a whole STRIDE, so we handle the remainder.
         let remaining_length = key_length - key_offset;
-        let node_id =
-            NodeId::new(extract_bits(key, key_offset, remaining_length));
-        let leaf_id = LeafId::new(node_id, remaining_length);
 
-        // TODO: Keep only indices in leaves
-        let leaf_base = self.nodes[parent_node_index].leaf_base;
-        let leaf_index = parent_node.leaf_bitmap.bitmap_index(leaf_id);
-        // Check if there is a leaf with the key
-        if !parent_node.leaf_bitmap.contains(leaf_id) {
-            // Create a new leaf node
-            self.leaves.insert((leaf_base + leaf_index) as usize, value);
+        let prefix_id = PrefixId::from_key(key, key_offset, remaining_length);
 
-            // Update offsets after the index
-            // Now we can insert leaves - It's relatively slow having to shift everything
-            for i in parent_node_index + 1..self.nodes.len() {
-                self.nodes[i].leaf_base += 1;
-            }
-
-            // Set the leaf
-            self.nodes[parent_node_index].leaf_bitmap.set(leaf_id);
-        } else {
-            // Just overwrite the existing leaf
-            self.leaves[(leaf_base + leaf_index) as usize] = value;
-        }
+        // Store the value index for that prefix chunk
+        self.reference[parent_node_index]
+            .insert(prefix_id, current_value_index);
 
         // Update the defaults for children
-        self.update_children_defaults(parent_node_index, leaf_base, leaf_index);
+        if self.calculate_leaf_ranges(parent_node_index, default_value_index) {
+            self.update_children(parent_node_index, default_value_index);
+        }
     }
 
     /// Lookup a key in the trie, performing longest-prefix match.
@@ -235,8 +252,8 @@ where
         // First node is root
         let mut parent_node_index = 0;
         let mut parent_node = &self.nodes[parent_node_index];
-        let mut default = parent_node.default_value.clone();
-        let mut local_id = NodeId::new(extract_bits(key, key_offset, STRIDE));
+
+        let mut local_id = StrideId::from_key(key, key_offset, STRIDE);
 
         // Should try internal nodes first, apparently. Shouldn't be a problem considering our default implementation.
         while parent_node.node_bitmap.contains(local_id) {
@@ -248,36 +265,18 @@ where
             parent_node_index = (node_base + node_offset) as usize;
             parent_node = &self.nodes[parent_node_index];
 
-            // Keep track of the latest valid default value
-            if parent_node.default_value.is_some() {
-                default = parent_node.default_value.clone();
-            }
-
             // Update key offset and local ID
             key_offset += STRIDE;
-            local_id = NodeId::new(extract_bits(key, key_offset, STRIDE));
+            local_id = StrideId::from_key(key, key_offset, STRIDE);
         }
 
-        // (space and insert optimization) Check leaf at local_id and its parent prefixes
-        // We start by calculating the prefix index - can be improved
-        let remaining_length = min(STRIDE, K::BITS - key_offset);
-        // We never look for leaves with full strides, so we start with its parent if its FULL.
-        let local_prefix_id = if remaining_length == STRIDE {
-            LeafId::new(local_id, remaining_length).parent()
-        } else {
-            LeafId::new(local_id, remaining_length)
-        };
+        // There will always be at least a 0th leaf (e.g. with the default)
+        let leaf_index = parent_node.leaf_bitmap.leafvec_index(local_id);
 
-        // Check leaves for receding prefixes
-        if let Some(leaf_index) =
-            parent_node.leaf_bitmap.find_leaf_lpm(local_prefix_id)
-        {
-            let leaf_base = parent_node.leaf_base;
-            return Some(
-                self.leaves[(leaf_base + leaf_index) as usize].clone(),
-            );
-        }
-        default
+        let leaf_base = parent_node.leaf_base;
+        let value_index = self.leaves[(leaf_base + leaf_index) as usize];
+
+        value_index.get().map(|i| self.values[i as usize].clone())
     }
 
     /// Find the next base node and leaf node index for a given parent node index.
@@ -295,37 +294,101 @@ where
         (next_node_base, next_leaf_base)
     }
 
+    /// Calculate the leaf ranges so they can be read with `leafvec_index`.
+    ///
+    /// We'll need to recalculate the whole leaf bitmap, since the default may require multiple ranges.
+    /// Example: default is 0/0 but we have a 0001/4, meaning we need:
+    /// - bit 0: default (0000/4)
+    /// - bit 1: other (0001/4)
+    /// - bit 2: default (rest)
+    fn calculate_leaf_ranges(
+        &mut self,
+        node_index: usize,
+        default_value_index: ValueIndex,
+    ) -> bool {
+        let mut changed = false;
+        let mut leaves_inserted = 0;
+        let leaf_base = self.nodes[node_index].leaf_base as usize;
+
+        // We go through every possible index and correct it.
+        // Small optimization:Since leaves have at most STRIDE-1 length, we can skip half and calculate a simpler `PrefixId`.
+        for prefix in 0..(1 << (STRIDE - 1)) {
+            // Get the correct value index
+            let correct_value = find_leaf_lpm(
+                &self.reference[node_index],
+                PrefixId::new(prefix, STRIDE - 1),
+            )
+            .unwrap_or(default_value_index);
+
+            let leaf_id = StrideId(prefix << 1);
+
+            // This index is where the leafvec optimization is telling us to look
+            let leafvec_index =
+                self.nodes[node_index].leaf_bitmap.leafvec_index(leaf_id);
+
+            let current_value = self.leaves[leaf_base + leafvec_index as usize];
+
+            // If it's not correct, update it
+            if current_value != correct_value {
+                changed = true;
+
+                // The bitmap index is where is should be read if it exists or inserted if it doesn't
+                let leaf_bitmap_index = leaf_base
+                    + self.nodes[node_index].leaf_bitmap.bitmap_index(leaf_id)
+                        as usize;
+
+                // Now we either create a new entry or update the existing one
+                if !self.nodes[node_index].leaf_bitmap.contains(leaf_id) {
+                    leaves_inserted += 1;
+                    self.leaves.insert(leaf_bitmap_index, correct_value);
+                    self.nodes[node_index].leaf_bitmap.set(leaf_id);
+                } else {
+                    self.leaves[leaf_bitmap_index] = correct_value;
+                }
+            }
+        }
+
+        // Update leaf bases
+        for i in node_index + 1..self.nodes.len() {
+            self.nodes[i].leaf_base += leaves_inserted;
+        }
+
+        changed
+    }
+
     /// Update the children defaults for a given parent node index.
-    fn update_children_defaults(
+    fn update_children(
         &mut self,
         parent_node_index: usize,
-        leaf_base: u32,
-        leaf_index: u32,
+        parent_default: ValueIndex,
     ) {
-        let base_node_offset = self.nodes[parent_node_index].node_base;
-        // For every child node
-        for id in 0..64 {
-            let node_id = NodeId::new(id);
-            // If it exists
-            if self.nodes[parent_node_index].node_bitmap.contains(node_id) {
-                // Check if there is a leaf node in this parent node that would be more specific to this key
-                // We check for leaves on the parent, which can be of at most STRIDE - 1 length.
-                let local_leaf_id = LeafId::new(node_id, STRIDE).parent();
-                let local_node_offset = self.nodes[parent_node_index]
+        let node_base = self.nodes[parent_node_index].node_base as usize;
+
+        // Check every possible
+        for prefix in 0..(1 << (STRIDE)) {
+            let child_id = StrideId(prefix);
+
+            if self.nodes[parent_node_index].node_bitmap.contains(child_id) {
+                let child_node_index = self.nodes[parent_node_index]
                     .node_bitmap
-                    .bitmap_index(node_id);
-                if self.nodes[parent_node_index]
-                    .leaf_bitmap
-                    .find_leaf_lpm(local_leaf_id)
-                    .is_some_and(|id| id == leaf_index)
+                    .bitmap_index(child_id);
+                let full_child_node_index =
+                    node_base + child_node_index as usize;
+
+                // Calculate the default for the child
+                let prefix_id = PrefixId::new(child_id.0, STRIDE).parent();
+                let default_value = find_leaf_lpm(
+                    &self.reference[parent_node_index],
+                    prefix_id,
+                )
+                .unwrap_or(parent_default);
+
+                // If something changed, update its children
+                if self
+                    .calculate_leaf_ranges(full_child_node_index, default_value)
                 {
-                    let local_default =
-                        self.leaves[(leaf_base + leaf_index) as usize].clone();
-                    // Set default
-                    self.nodes
-                        [(base_node_offset + local_node_offset) as usize]
-                        .default_value = Some(local_default);
-                };
+                    self.update_children(full_child_node_index, default_value);
+                }
             }
         }
     }
@@ -347,15 +410,15 @@ fn test_find_leaf() {
 #[test]
 fn one_level_before() {
     let mut trie = Poptrie::<u32, u32>::new();
-    trie.insert(0b000001_000001_000001_000001_000000_00, 25, 0);
-    trie.insert(0b000001_000001_000001_000001_000001_01, 32, 1);
+    trie.insert(0b000001_000001_000001_000001_000000_00, 25, 1);
+    trie.insert(0b000001_000001_000001_000001_000011_01, 32, 2);
     assert_eq!(
         trie.lookup(0b000001_000001_000001_000001_000001_00),
-        Some(0)
+        Some(1)
     );
     assert_eq!(
-        trie.lookup(0b000001_000001_000001_000001_000001_01),
-        Some(1)
+        trie.lookup(0b000001_000001_000001_000001_000011_01),
+        Some(2)
     );
 }
 
@@ -397,4 +460,35 @@ fn default_overwrite() {
         trie.lookup(0b000001_000001_001000_000000_000000_00),
         Some(1)
     );
+}
+
+#[test]
+fn simple() {
+    let mut trie = Poptrie::<u32, u32>::new();
+    trie.insert(0b000000_000000_000000_000000_000000_00, 1, 1);
+    assert_eq!(
+        trie.lookup(0b000000_000000_001000_000000_000000_00),
+        Some(1)
+    );
+}
+
+#[test]
+fn simple2() {
+    let mut trie = Poptrie::<u32, u32>::new();
+    trie.insert(0b000000_000000_000000_000000_000000_00, 0, 1);
+    trie.insert(0b000001_000000_000000_000000_000000_00, 7, 2);
+    trie.insert(0b000001_100000_000000_000000_000000_00, 13, 3);
+    assert_eq!(
+        trie.lookup(0b000001_100000_100000_000000_000000_00),
+        Some(1)
+    );
+}
+
+#[test]
+fn simple3() {
+    let mut trie = Poptrie::<u32, u32>::new();
+    trie.insert(0b000001_100001_000000_000000_000000_00, 13, 13);
+    trie.insert(0b000001_000000_000000_000000_000000_00, 12, 12);
+    trie.insert(0b000001_000000_000000_000000_000000_00, 7, 7);
+    assert_eq!(trie.lookup(0b000001_100001_100000_000000_000000_00), None,);
 }

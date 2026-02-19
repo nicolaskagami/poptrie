@@ -2,12 +2,14 @@ use core::ops::{Shl, Shr};
 
 /// A trait for types that can be used as keys in the poptrie.
 ///
-/// Needs to inform its bit width and a `to_u8` method that returns its 8 least significant bits.
+/// - Needs to inform its bit width and a `to_u8` method that returns its 8 least significant bits.
+/// - Needs to implement `rotate_right` method that rotates the key by `n` bits to the right.
 pub trait Key:
     Copy + Shl<u8, Output = Self> + Shr<u8, Output = Self> + Sized
 {
     const BITS: u8;
     fn to_u8(self) -> u8;
+    fn rotate_right(self, n: u32) -> Self;
 }
 
 impl Key for u32 {
@@ -15,6 +17,11 @@ impl Key for u32 {
     #[inline(always)]
     fn to_u8(self) -> u8 {
         self as u8
+    }
+
+    #[inline(always)]
+    fn rotate_right(self, n: u32) -> Self {
+        self.rotate_right(n)
     }
 }
 
@@ -24,10 +31,32 @@ impl Key for u128 {
     fn to_u8(self) -> u8 {
         self as u8
     }
+
+    #[inline(always)]
+    fn rotate_right(self, n: u32) -> Self {
+        self.rotate_right(n)
+    }
 }
 
 /// Extract `len` bits from `key`, starting from `offset` bits from the most
-/// significant bit.
+/// significant bit. Bit position is exact (msb aligned) and zero-padded to the right.
+///
+///  MSB |---------- offset -----------|----- len -----|---remaining---| LSB
+///                                     ^^^^^^^^^^^^^^^
+///                                     extracted  bits
+///
+/// - `len` must be at most 8 since where returning a `u8`.
+#[inline(always)]
+pub(crate) fn extract_bits<K>(key: K, offset: u8, len: u8) -> u8
+where
+    K: Key,
+{
+    (key.rotate_right((K::BITS - offset).wrapping_sub(len) as u32)).to_u8()
+        & ((1u16 << len) - 1) as u8
+}
+
+/// Extract `len` bits from `key`, starting from `offset` bits from the most
+/// significant bit. Significant bits are lsb-aligned and zero-padded to the left.
 ///
 ///  MSB |---------- offset -----------|----- len -----|---remaining---| LSB
 ///                                     ^^^^^^^^^^^^^^^
@@ -35,7 +64,8 @@ impl Key for u128 {
 ///
 /// - If `len` + `offset` > K::BITS, the extraction will be saturated.
 /// - `len` must be at most 8 since where returning a `u8`.
-pub(crate) fn extract_bits<K>(key: K, offset: u8, len: u8) -> u8
+#[inline(always)]
+pub(crate) fn extract_bits_saturated<K>(key: K, offset: u8, len: u8) -> u8
 where
     K: Key,
 {
@@ -63,8 +93,17 @@ mod tests {
     #[test]
     fn test_saturated_extraction() {
         let key: u32 = 0b000000_000000_000000_000000_000000_01;
-        assert_eq!(extract_bits(key, 30, 6), 1);
+        assert_eq!(extract_bits_saturated(key, 30, 6), 1);
         let key: u32 = 0b000001_000001_000001_000001_000001_01;
-        assert_eq!(extract_bits(key, 30, 6), 1);
+        assert_eq!(extract_bits_saturated(key, 30, 6), 1);
+    }
+
+    #[test]
+    fn test_msb_alignement() {
+        let key: u32 = 0b000000_000000_000000_000000_000000_01;
+        assert_eq!(extract_bits(key, 30, 6), 0b0001_0000);
+        let key: u32 = 0b000001_000001_000001_000001_000001_01;
+        assert_eq!(extract_bits(key, 30, 6), 0b0001_0000);
+        assert_eq!(extract_bits(key, 0, 6), 0b0000_0001);
     }
 }
