@@ -51,9 +51,7 @@ pub(crate) fn extract_bits<K>(key: K, offset: u8, len: u8) -> u8
 where
     K: Key,
 {
-    ((key << offset >> offset)
-        .rotate_right((K::BITS - offset).wrapping_sub(len) as u32))
-    .to_u8()
+    (key.rotate_right((K::BITS - offset).wrapping_sub(len) as u32)).to_u8()
         & ((1u16 << len) - 1) as u8
 }
 
