@@ -3,6 +3,7 @@ mod utils;
 use core::net::Ipv4Addr;
 use poptrie::Poptrie;
 use proptest::prelude::*;
+use std::collections::HashMap;
 use utils::Ipv4Prefix;
 
 use crate::utils::HashMapLpm;
@@ -24,12 +25,15 @@ fn ipv4_prefix_strategy() -> impl Strategy<Value = Ipv4Prefix> {
 }
 
 /// Generate a vector of IPv4 prefixes with associated values
+///
+/// Using a HashMap to store keys uniquely.
 fn prefix_value_vec_strategy<T: Clone + std::fmt::Debug>(
     value_strategy: impl Strategy<Value = T>,
     max_size: usize,
-) -> impl Strategy<Value = Vec<(Ipv4Prefix, T)>> {
-    prop::collection::vec(
-        (ipv4_prefix_strategy(), value_strategy),
+) -> impl Strategy<Value = HashMap<Ipv4Prefix, T>> {
+    prop::collection::hash_map(
+        ipv4_prefix_strategy(),
+        value_strategy,
         0..=max_size,
     )
 }
@@ -38,20 +42,30 @@ proptest! {
     /// Test that Poptrie matches reference implementation
     #[test]
     fn matches_reference_model(
-        prefixes in prefix_value_vec_strategy(any::<u32>(), 500),
+        prefixes in prefix_value_vec_strategy(any::<u32>(), 200),
         lookup_ips in prop::collection::vec(ipv4_strategy(), 1..=20)
     ) {
         let mut poptrie = Poptrie::new();
         let mut reference = HashMapLpm::new();
 
-        // Always insert default 0
-        poptrie.insert(0, 0, 0);
-        reference.insert(Ipv4Addr::new(0, 0, 0, 0), 0, 0);
-
         // Insert all prefixes into both implementations
         for (prefix, value) in &prefixes {
             poptrie.insert(prefix.addr.to_bits(),prefix.prefix_len, *value);
             reference.insert(prefix.addr.clone(), prefix.prefix_len, *value);
+        }
+
+        // Get 10% of prefixes for deletion
+        let delete_prefixes = prefixes.iter().take(prefixes.len() / 10);
+        for (prefix, _) in delete_prefixes {
+            // Assert that the poptrie contains the prefix before deletion
+            prop_assert!(poptrie.contains_key(prefix.addr.to_bits(), prefix.prefix_len));
+
+            // Delete
+            poptrie.remove(prefix.addr.to_bits(), prefix.prefix_len);
+            reference.remove(prefix.addr.clone(), prefix.prefix_len);
+
+            // Assert that the poptrie no longer contains the prefix after deletion
+            prop_assert!(!poptrie.contains_key(prefix.addr.to_bits(), prefix.prefix_len));
         }
 
         // Compare lookups

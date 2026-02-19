@@ -32,6 +32,11 @@ where
         let masked_prefix = mask_prefix(prefix, prefix_length);
         self.map.insert((masked_prefix, prefix_length), value);
     }
+
+    pub fn remove(&mut self, prefix: Ipv4Addr, prefix_length: u8) {
+        let masked_prefix = mask_prefix(prefix, prefix_length);
+        self.map.remove(&(masked_prefix, prefix_length));
+    }
 }
 
 /// Mask the `address` with the given `prefix_length`
