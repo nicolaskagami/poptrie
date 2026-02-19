@@ -22,8 +22,8 @@ trie.insert(u32::from_be_bytes([192, 168, 1, 0]), 24, "192.168.1.0/24");
 trie.insert(u32::from_be_bytes([10, 0, 0, 0]),8, "10.0.0.0/8");
 
 // Perform longest prefix match lookups
-assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 1, 5])), Some("192.168.1.0/24"));
-assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 2, 5])), Some("192.168.0.0/16"));
-assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some("10.0.0.0/8"));
+assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 1, 5])), Some(&"192.168.1.0/24"));
+assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 2, 5])), Some(&"192.168.0.0/16"));
+assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some(&"10.0.0.0/8"));
 assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), None);
 ```

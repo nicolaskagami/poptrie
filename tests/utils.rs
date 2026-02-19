@@ -12,19 +12,17 @@ where
     T: Copy,
 {
     pub fn new() -> Self {
-        HashMapLpm {
-            map: HashMap::new(),
-        }
+        HashMapLpm { map: HashMap::new() }
     }
 
-    pub fn lookup(&self, address: Ipv4Addr) -> Option<T> {
+    pub fn lookup(&self, address: Ipv4Addr) -> Option<&T> {
         // Check all prefix lengths starting with the longest.
         for length in (0..=32).rev() {
             // Apply the mask to the address
             let masked_prefix = mask_prefix(address, length);
             // Return on the first match
             if let Some(result) = self.map.get(&(masked_prefix, length)) {
-                return Some(*result);
+                return Some(result);
             }
         }
         None
@@ -39,11 +37,8 @@ where
 /// Mask the `address` with the given `prefix_length`
 fn mask_prefix(addr: Ipv4Addr, prefix_len: u8) -> Ipv4Addr {
     debug_assert!(prefix_len <= 32);
-    let mask = if prefix_len == 0 {
-        0u32
-    } else {
-        u32::MAX << (32 - prefix_len)
-    };
+    let mask =
+        if prefix_len == 0 { 0u32 } else { u32::MAX << (32 - prefix_len) };
     Ipv4Addr::from_bits(addr.to_bits() & mask)
 }
 /// Represents an IPv4 prefix (CIDR notation)
@@ -55,9 +50,6 @@ pub struct Ipv4Prefix {
 
 impl Ipv4Prefix {
     pub fn new(addr: Ipv4Addr, prefix_len: u8) -> Self {
-        Self {
-            addr: mask_prefix(addr, prefix_len),
-            prefix_len,
-        }
+        Self { addr: mask_prefix(addr, prefix_len), prefix_len }
     }
 }

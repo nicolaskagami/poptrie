@@ -94,15 +94,14 @@ const STRIDE: u8 = 6;
 /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]),8, "10.0.0.0/8");
 ///
 /// // Perform longest prefix match lookups
-/// assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 1, 5])), Some("192.168.1.0/24"));
-/// assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 2, 5])), Some("192.168.0.0/16"));
-/// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some("10.0.0.0/8"));
+/// assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 1, 5])), Some(&"192.168.1.0/24"));
+/// assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 2, 5])), Some(&"192.168.0.0/16"));
+/// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some(&"10.0.0.0/8"));
 /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), None);
 /// ```
 pub struct Poptrie<K, V>
 where
     K: Key,
-    V: Clone,
 {
     /// The internal nodes of the trie.
     nodes: Vec<Node>,
@@ -123,7 +122,6 @@ where
 impl<K, V> Poptrie<K, V>
 where
     K: Key,
-    V: Clone + Default,
 {
     pub fn new() -> Self {
         let mut root_node = Node::new(
@@ -247,7 +245,7 @@ where
     }
 
     /// Lookup a key in the trie, performing longest-prefix match.
-    pub fn lookup(&self, key: K) -> Option<V> {
+    pub fn lookup(&self, key: K) -> Option<&V> {
         let mut key_offset = 0;
         // First node is root
         let mut parent_node_index = 0;
@@ -276,7 +274,7 @@ where
         let leaf_base = parent_node.leaf_base;
         let value_index = self.leaves[(leaf_base + leaf_index) as usize];
 
-        value_index.get().map(|i| self.values[i as usize].clone())
+        value_index.get().map(|i| &self.values[i as usize])
     }
 
     /// Find the next base node and leaf node index for a given parent node index.
@@ -401,10 +399,10 @@ fn test_find_leaf() {
     trie.insert(u32::from_be_bytes([192, 168, 0, 1]), 32, 1);
     trie.insert(u32::from_be_bytes([192, 168, 0, 2]), 32, 2);
 
-    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 0])), Some(0));
-    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 1])), Some(1));
-    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 2])), Some(2));
-    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 3])), Some(0));
+    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 0])), Some(&0));
+    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 1])), Some(&1));
+    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 2])), Some(&2));
+    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 3])), Some(&0));
 }
 
 #[test]
@@ -412,14 +410,8 @@ fn one_level_before() {
     let mut trie = Poptrie::<u32, u32>::new();
     trie.insert(0b000001_000001_000001_000001_000000_00, 25, 1);
     trie.insert(0b000001_000001_000001_000001_000011_01, 32, 2);
-    assert_eq!(
-        trie.lookup(0b000001_000001_000001_000001_000001_00),
-        Some(1)
-    );
-    assert_eq!(
-        trie.lookup(0b000001_000001_000001_000001_000011_01),
-        Some(2)
-    );
+    assert_eq!(trie.lookup(0b000001_000001_000001_000001_000001_00), Some(&1));
+    assert_eq!(trie.lookup(0b000001_000001_000001_000001_000011_01), Some(&2));
 }
 
 #[test]
@@ -428,26 +420,17 @@ fn base_default() {
     let mut trie = Poptrie::<u32, u32>::new();
     trie.insert(0b000001_000000_000000_000000_000000_00, 6, 0);
     trie.insert(0b000000_000000_000000_000000_000000_00, 12, 1);
-    assert_eq!(
-        trie.lookup(0b000001_000000_000000_000000_000000_00),
-        Some(0)
-    );
+    assert_eq!(trie.lookup(0b000001_000000_000000_000000_000000_00), Some(&0));
     // Levels 2 and 3
     let mut trie = Poptrie::<u32, u32>::new();
     trie.insert(0b000000_110000_000000_000000_000000_00, 12, 0);
     trie.insert(0b000000_000000_000000_000000_000000_00, 18, 1);
-    assert_eq!(
-        trie.lookup(0b000000_110000_000000_000000_000000_00),
-        Some(0)
-    );
+    assert_eq!(trie.lookup(0b000000_110000_000000_000000_000000_00), Some(&0));
     // Levels 1 and 2 (non-full length)
     let mut trie = Poptrie::<u32, u32>::new();
     trie.insert(0b001100_000000_000000_000000_000000_00, 10, 0);
     trie.insert(0b000000_000000_000000_000000_000000_00, 1, 1);
-    assert_eq!(
-        trie.lookup(0b001100_000100_000000_000000_000000_00),
-        Some(1)
-    );
+    assert_eq!(trie.lookup(0b001100_000100_000000_000000_000000_00), Some(&1));
 }
 
 #[test]
@@ -456,20 +439,14 @@ fn default_overwrite() {
     trie.insert(0b000000_000000_000000_000000_000000_00, 0, 0);
     trie.insert(0b000001_000001_000000_000000_000000_00, 15, 2);
     trie.insert(0b000000_000000_000000_000000_000000_00, 0, 1);
-    assert_eq!(
-        trie.lookup(0b000001_000001_001000_000000_000000_00),
-        Some(1)
-    );
+    assert_eq!(trie.lookup(0b000001_000001_001000_000000_000000_00), Some(&1));
 }
 
 #[test]
 fn simple() {
     let mut trie = Poptrie::<u32, u32>::new();
     trie.insert(0b000000_000000_000000_000000_000000_00, 1, 1);
-    assert_eq!(
-        trie.lookup(0b000000_000000_001000_000000_000000_00),
-        Some(1)
-    );
+    assert_eq!(trie.lookup(0b000000_000000_001000_000000_000000_00), Some(&1));
 }
 
 #[test]
@@ -478,10 +455,7 @@ fn simple2() {
     trie.insert(0b000000_000000_000000_000000_000000_00, 0, 1);
     trie.insert(0b000001_000000_000000_000000_000000_00, 7, 2);
     trie.insert(0b000001_100000_000000_000000_000000_00, 13, 3);
-    assert_eq!(
-        trie.lookup(0b000001_100000_100000_000000_000000_00),
-        Some(1)
-    );
+    assert_eq!(trie.lookup(0b000001_100000_100000_000000_000000_00), Some(&1));
 }
 
 #[test]
