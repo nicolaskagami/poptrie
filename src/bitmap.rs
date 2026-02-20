@@ -34,6 +34,14 @@ where
         }
     }
 
+    /// Returns the index of the entry attributed to the given leaf id using leafvec optimization.
+    /// Will be the same as `bitmap_index` when the id is not set.
+    /// Apparently it's slightly slower than `bitmap_index`.
+    #[inline(always)] // Particularly effective to inline
+    pub(crate) fn leafvec_index(&self, id: T) -> u32 {
+        (self.bits << (63u8 - id.into())).count_ones() - 1
+    }
+
     /// Returns true if the bitmap contains the given ID.
     #[inline(always)]
     pub(crate) fn contains(&self, id: T) -> bool {
@@ -50,15 +58,6 @@ where
     #[inline(always)]
     pub(crate) fn pop_count(&self) -> u32 {
         self.bits.count_ones()
-    }
-}
-
-impl Bitmap<StrideId> {
-    /// Returns the index of leaf attributed to the given `LeafId` using leafvec optimization
-    // Actually slower than `bitmap_index`
-    #[inline(always)] // Particularly effective to inline
-    pub(crate) fn leafvec_index(&self, id: StrideId) -> u32 {
-        (self.bits << (63u8 - id.0)).count_ones() - 1
     }
 }
 

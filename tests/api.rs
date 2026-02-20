@@ -309,13 +309,13 @@ fn insert_order_does_not_affect_lpm() {
     reverse.insert(0b000001_000001_000000_000000_000000_00u32, 12, 12);
     reverse.insert(0b000001_000000_000000_000000_000000_00u32, 6, 6);
 
-    let probes = [
+    let lookups = [
         0b000001_000001_000001_111111_000000_00u32,
         0b000001_000001_000010_000000_000000_00u32,
         0b000001_000010_000000_000000_000000_00u32,
         0b000010_000000_000000_000000_000000_00u32,
     ];
-    for addr in probes {
+    for addr in lookups {
         assert_eq!(forward.lookup(addr), reverse.lookup(addr),);
     }
 }

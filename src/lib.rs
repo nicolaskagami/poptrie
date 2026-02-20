@@ -57,6 +57,7 @@ const STRIDE: u8 = 6;
 /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some(&"10.0.0.0/8"));
 /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), None);
 /// ```
+#[derive(Debug, Clone)]
 pub struct Poptrie<K, V>
 where
     K: Key,
