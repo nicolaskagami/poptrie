@@ -4,7 +4,11 @@ A pure Rust implementation of [Poptrie](https://dl.acm.org/doi/abs/10.1145/28299
 
 Poptrie uses bitmaps combined with popcount to achieve fast IP routing table lookups with high cache locality. During lookup, the key is consumed in the biggest step that can be represented in a bitmap for which the native popcount instruction exists (i.e. 6-bit steps in a 64-bit bitmap).
 
-![CI](https://github.com/nicolaskagami/poptrie/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/nicolaskagami/poptrie/actions/workflows/ci.yml/badge.svg)](https://github.com/nicolaskagami/poptrie/actions)
+[![Crates.io](https://img.shields.io/crates/v/poptrie)](https://crates.io/crates/poptrie)
+[![Docs.rs](https://docs.rs/poptrie/badge.svg)](https://docs.rs/poptrie)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue)](LICENSE-MIT)
+[![Apache 2.0 licensed](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE-APACHE)
 
 ### Features
 
