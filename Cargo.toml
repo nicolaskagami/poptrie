@@ -1,11 +1,15 @@
 [package]
 name = "poptrie"
-description = "A pure-rust implementation of poptrie"
-homepage = "https://github.com/nicolaskagami/poptrie"
 version = "0.1.0"
+description = "A pure-rust implementation of poptrie"
+authors = ["Nicolas Kagami <nicolaskagami@gmail.com>"]
+homepage = "https://github.com/nicolaskagami/poptrie"
+repository = "https://github.com/nicolaskagami/poptrie"
 license = "Apache-2.0 OR MIT"
 edition = "2024"
 readme = "README.md"
+keywords = ["poptrie", "ip", "prefix", "trie"]
+categories = ["network-programming", "data-structures", "no-std"]
 
 [dependencies]
 
