@@ -46,7 +46,7 @@ fn mask_prefix(addr: Ipv4Addr, prefix_len: u8) -> Ipv4Addr {
         if prefix_len == 0 { 0u32 } else { u32::MAX << (32 - prefix_len) };
     Ipv4Addr::from_bits(addr.to_bits() & mask)
 }
-/// Represents an IPv4 prefix (CIDR notation)
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Ipv4Prefix {
     pub addr: Ipv4Addr,
