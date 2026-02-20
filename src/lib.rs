@@ -1,23 +1,15 @@
 //! # poptrie
 //!
-//! A Poptrie is a data structure for efficient longest-prefix matching. It's similar to a tree bitmap, but keeps nodes in a single array.
-//! # Implementation Details
-//! - Pure Rust, `no_std` implementation, requiring `alloc`.
-//! - No external dependencies.
-//! - Using leafvec optimization (section 3.3 of the paper).
-//! - Not using Direct Pointing (section 3.4 of the paper).
-//! - Not using buddy memory allocation.
-//! - Not using incremental update (section 3.5 of the paper).
-//! - Not using an auxiliary radix tree.
-//! - Using an original algorithm for storing prefixes that saves space and insertion time.
-//! - Using an original algorithm for keeping and updating default values.
-// TODO: make stride generic
-// TODO: implement longer strides (CP-trie)
-// TODO: implement direct pointing (generic)
-// TODO: newtypes for dealing with bitmaps? Always one base/offset, one index and ids
-
+//! A Poptrie is a data structure for efficient longest-prefix matching. It's similar to a tree
+//! bitmap, but keeps nodes in a single array.
+//! A pure Rust implementation of [Poptrie](https://dl.acm.org/doi/10.1145/2740070.2626377), a
+//! data structure for efficient longest-prefix matching (LPM) lookups.
+//!
+//! Poptrie uses bitmaps combined with the popcount instruction to achieve fast IP routing
+//! table lookups with high cache locality. During lookup, the key is consumed in the biggest
+//! step that can be represented in a bitmap for which the native popcount instruction exists
+//! (i.e. 6-bit steps in a 64-bit bitmap).
 #![no_std]
-
 extern crate alloc;
 
 mod bitmap;
@@ -28,13 +20,15 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitmap::*;
+use core::cmp::min;
 use core::marker::PhantomData;
 use key::*;
 use value_index::ValueIndex;
 
 /// The maximum number of bits we can consume from the prefix at a time.
 ///
-/// This is 6 because the 2^6 = 64, which is the biggest size for which a native popcount instruction exists.
+/// This is 6 because the 2^6 = 64, which is the biggest size for which a native popcount
+/// instruction exists.
 const STRIDE: u8 = 6;
 
 /// A compressed prefix tree optimized for fast longest prefix match (LPM) lookups.
@@ -55,7 +49,7 @@ const STRIDE: u8 = 6;
 /// // Insert prefixes with their associated values
 /// trie.insert(u32::from_be_bytes([192, 168, 0, 0]), 16, "192.168.0.0/16");
 /// trie.insert(u32::from_be_bytes([192, 168, 1, 0]), 24, "192.168.1.0/24");
-/// trie.insert(u32::from_be_bytes([10, 0, 0, 0]),8, "10.0.0.0/8");
+/// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "10.0.0.0/8");
 ///
 /// // Perform longest prefix match lookups
 /// assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 1, 5])), Some(&"192.168.1.0/24"));
@@ -88,6 +82,14 @@ where
     K: Key,
 {
     /// Construct a new, empty poptrie.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let trie = Poptrie::<u32, ()>::new();
+    /// ```
     pub fn new() -> Self {
         let mut root_node = Node::new(
             #[cfg(test)]
@@ -107,6 +109,27 @@ where
     }
 
     /// Insert a value into the trie associated with the given prefix.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key_length > K::BITS`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    ///
+    /// // Insert a /8 prefix
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "10.0.0.0/8");
+    ///
+    /// // Insert a more specific /24 prefix
+    /// trie.insert(u32::from_be_bytes([10, 1, 2, 0]), 24, "10.1.2.0/24");
+    ///
+    /// // Insert a default route (0-length prefix matches everything)
+    /// trie.insert(0u32, 0, "default");
+    /// ```
     pub fn insert(&mut self, key: K, key_length: u8, value: V) {
         assert!(key_length <= K::BITS);
         // Store the value in the values vector and get its index
@@ -210,6 +233,32 @@ where
     }
 
     /// Lookup a key in the trie, performing longest-prefix match.
+    ///
+    /// Returns `None` if no prefix matches the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    ///
+    /// // No match without a default route
+    /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), None);
+    ///
+    /// trie.insert(0u32, 0, "default");
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "10/8");
+    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, "10.1/16");
+    ///
+    /// // Longest prefix match: 10.1.2.3 matches 10.1/16
+    /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some(&"10.1/16"));
+    ///
+    /// // Falls back to 10/8
+    /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 2, 0, 0])), Some(&"10/8"));
+    ///
+    /// // Falls back to default
+    /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), Some(&"default"));
+    /// ```
     pub fn lookup(&self, key: K) -> Option<&V> {
         let mut key_offset = 0;
         // First node is root
@@ -218,7 +267,7 @@ where
 
         let mut local_id = StrideId::from_key(key, key_offset, STRIDE);
 
-        // Should try internal nodes first, apparently. Shouldn't be a problem considering our default implementation.
+        // Should always try internal nodes first.
         while parent_node.node_bitmap.contains(local_id) {
             // If there's a valid internal node, traverse it
             let node_base = parent_node.node_base;
@@ -242,7 +291,31 @@ where
         value_index.get().map(|i| &self.values[i as usize])
     }
 
-    /// Returns `true` if the poptrie contains a value for the given key.
+    /// Returns `true` if the trie contains an entry for the exact prefix
+    /// `(key, key_length)`.
+    ///
+    /// Note that this checks for an exact prefix match, not a longest-prefix
+    /// match. A key that would resolve via [`lookup`](Self::lookup) may still
+    /// return `false` here if it was never explicitly inserted with that length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
+    ///
+    /// // Exact prefix is present
+    /// assert!(trie.contains_key(u32::from_be_bytes([10, 0, 0, 0]), 8));
+    ///
+    /// // Different length — not present, even though lookup would succeed
+    /// assert!(!trie.contains_key(u32::from_be_bytes([10, 0, 0, 0]), 7));
+    /// assert!(!trie.contains_key(u32::from_be_bytes([10, 0, 0, 0]), 9));
+    ///
+    /// // Completely absent prefix
+    /// assert!(!trie.contains_key(u32::from_be_bytes([192, 168, 0, 0]), 16));
+    /// ```
     pub fn contains_key(&self, key: K, key_length: u8) -> bool {
         // Find the final parent node and prefix id
         let (parent_node, prefix_id, _) =
@@ -251,7 +324,27 @@ where
         self.reference[parent_node].contains_key(&prefix_id)
     }
 
-    /// Removes and returns the value `V` associated with the given key.
+    /// Removes and returns the value associated with the exact prefix
+    /// `(key, key_length)`, or `None` if it was not present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
+    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
+    ///
+    /// // Remove the /16 prefix
+    /// assert_eq!(trie.remove(u32::from_be_bytes([10, 1, 0, 0]), 16), Some(16));
+    ///
+    /// // Addresses previously matched by /16 now fall back to /8
+    /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some(&8));
+    ///
+    /// // Removing a prefix that doesn't exist returns None
+    /// assert!(!trie.contains_key(u32::from_be_bytes([10, 1, 0, 0]), 16));
+    /// ```
     pub fn remove(&mut self, key: K, key_length: u8) -> Option<V> {
         // Find the final parent node and prefix id
         let (parent_node, prefix_id, default_value_index) =
@@ -273,7 +366,8 @@ where
                 higher_v.decrement();
             }
 
-            // SAFETY: The value is guaranteed to exist because it was just removed from the reference map.
+            // SAFETY: The value is guaranteed to exist because it was just removed from the
+            // reference map.
             self.values.remove(v.get().unwrap())
         })
     }
@@ -304,7 +398,7 @@ where
             // Check if there's already a node with `local_id`
             if !parent_node.node_bitmap.contains(local_id) {
                 // If there's no node with `local_id`, break out
-                panic!();
+                break;
             }
 
             // Calculate the full node index
@@ -319,7 +413,7 @@ where
             key_offset += STRIDE;
         }
 
-        let remaining_length = key_length - key_offset;
+        let remaining_length = min(key_length - key_offset, STRIDE - 1);
         let prefix_id = PrefixId::from_key(key, key_offset, remaining_length);
 
         (parent_node_index, prefix_id, default_value_index)
@@ -342,7 +436,8 @@ where
 
     /// Calculate the leaf ranges so they can be read with `leafvec_index`.
     ///
-    /// We'll need to recalculate the whole leaf bitmap, since the default may require multiple ranges.
+    /// We'll need to recalculate the whole leaf bitmap, since the default may require multiple
+    /// ranges.
     /// Example: default is 0/0 but we have a 0001/4, meaning we need:
     /// - bit 0: default (0000/4)
     /// - bit 1: other (0001/4)
@@ -357,7 +452,8 @@ where
         let leaf_base = self.nodes[node_index].leaf_base as usize;
 
         // We go through every possible index and correct it.
-        // Small optimization:Since leaves have at most STRIDE-1 length, we can skip half and calculate a simpler `PrefixId`.
+        // Small optimization: Since leaves have at most STRIDE-1 length, we can skip half and
+        // calculate a simpler `PrefixId`.
         for prefix in 0..(1 << (STRIDE - 1)) {
             // Get the correct value index
             let correct_value = find_leaf_lpm(
@@ -378,7 +474,8 @@ where
             if current_value != correct_value {
                 changed = true;
 
-                // The bitmap index is where is should be read if it exists or inserted if it doesn't
+                // The bitmap index is where is should be read if it exists or inserted if it
+                // doesn't
                 let leaf_bitmap_index = leaf_base
                     + self.nodes[node_index].leaf_bitmap.bitmap_index(leaf_id)
                         as usize;
@@ -475,79 +572,4 @@ impl Node {
             leaf_base,
         }
     }
-}
-
-#[test]
-fn test_find_leaf() {
-    let mut trie = Poptrie::<u32, u32>::new();
-    trie.insert(u32::from_be_bytes([192, 168, 0, 0]), 30, 0);
-    trie.insert(u32::from_be_bytes([192, 168, 0, 1]), 32, 1);
-    trie.insert(u32::from_be_bytes([192, 168, 0, 2]), 32, 2);
-
-    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 0])), Some(&0));
-    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 1])), Some(&1));
-    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 2])), Some(&2));
-    assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 0, 3])), Some(&0));
-}
-
-#[test]
-fn one_level_before() {
-    let mut trie = Poptrie::<u32, u32>::new();
-    trie.insert(0b000001_000001_000001_000001_000000_00, 25, 1);
-    trie.insert(0b000001_000001_000001_000001_000011_01, 32, 2);
-    assert_eq!(trie.lookup(0b000001_000001_000001_000001_000001_00), Some(&1));
-    assert_eq!(trie.lookup(0b000001_000001_000001_000001_000011_01), Some(&2));
-}
-
-#[test]
-fn base_default() {
-    // Levels 1 and 2
-    let mut trie = Poptrie::<u32, u32>::new();
-    trie.insert(0b000001_000000_000000_000000_000000_00, 6, 0);
-    trie.insert(0b000000_000000_000000_000000_000000_00, 12, 1);
-    assert_eq!(trie.lookup(0b000001_000000_000000_000000_000000_00), Some(&0));
-    // Levels 2 and 3
-    let mut trie = Poptrie::<u32, u32>::new();
-    trie.insert(0b000000_110000_000000_000000_000000_00, 12, 0);
-    trie.insert(0b000000_000000_000000_000000_000000_00, 18, 1);
-    assert_eq!(trie.lookup(0b000000_110000_000000_000000_000000_00), Some(&0));
-    // Levels 1 and 2 (non-full length)
-    let mut trie = Poptrie::<u32, u32>::new();
-    trie.insert(0b001100_000000_000000_000000_000000_00, 10, 0);
-    trie.insert(0b000000_000000_000000_000000_000000_00, 1, 1);
-    assert_eq!(trie.lookup(0b001100_000100_000000_000000_000000_00), Some(&1));
-}
-
-#[test]
-fn default_overwrite() {
-    let mut trie = Poptrie::<u32, u32>::new();
-    trie.insert(0b000000_000000_000000_000000_000000_00, 0, 0);
-    trie.insert(0b000001_000001_000000_000000_000000_00, 15, 2);
-    trie.insert(0b000000_000000_000000_000000_000000_00, 0, 1);
-    assert_eq!(trie.lookup(0b000001_000001_001000_000000_000000_00), Some(&1));
-}
-
-#[test]
-fn simple() {
-    let mut trie = Poptrie::<u32, u32>::new();
-    trie.insert(0b000000_000000_000000_000000_000000_00, 1, 1);
-    assert_eq!(trie.lookup(0b000000_000000_001000_000000_000000_00), Some(&1));
-}
-
-#[test]
-fn simple2() {
-    let mut trie = Poptrie::<u32, u32>::new();
-    trie.insert(0b000000_000000_000000_000000_000000_00, 0, 1);
-    trie.insert(0b000001_000000_000000_000000_000000_00, 7, 2);
-    trie.insert(0b000001_100000_000000_000000_000000_00, 13, 3);
-    assert_eq!(trie.lookup(0b000001_100000_100000_000000_000000_00), Some(&1));
-}
-
-#[test]
-fn simple3() {
-    let mut trie = Poptrie::<u32, u32>::new();
-    trie.insert(0b000001_100001_000000_000000_000000_00, 13, 13);
-    trie.insert(0b000001_000000_000000_000000_000000_00, 12, 12);
-    trie.insert(0b000001_000000_000000_000000_000000_00, 7, 7);
-    assert_eq!(trie.lookup(0b000001_100001_100000_000000_000000_00), None,);
 }

@@ -4,6 +4,37 @@ use core::ops::{Shl, Shr};
 ///
 /// - Needs to inform its bit width and a `to_u8` method that returns its 8 least significant bits.
 /// - Needs to implement `rotate_right` method that rotates the key by `n` bits to the right.
+///
+/// # Examples
+///
+/// Implementing `Key` for a custom newtype:
+///
+/// ```
+/// use poptrie::key::Key;
+/// use core::ops::{Shl, Shr};
+///
+/// #[derive(Clone, Copy)]
+/// struct MyAddr(u32);
+///
+/// impl Shl<u8> for MyAddr {
+///     type Output = Self;
+///     fn shl(self, n: u8) -> Self { MyAddr(self.0 << n) }
+/// }
+///
+/// impl Shr<u8> for MyAddr {
+///     type Output = Self;
+///     fn shr(self, n: u8) -> Self { MyAddr(self.0 >> n) }
+/// }
+///
+/// impl Key for MyAddr {
+///     const BITS: u8 = 32;
+///     fn to_u8(self) -> u8 { self.0 as u8 }
+///     fn rotate_right(self, n: u32) -> Self { MyAddr(self.0.rotate_right(n)) }
+/// }
+///
+/// assert_eq!(MyAddr::BITS, 32);
+/// assert_eq!(MyAddr(0xdeadbeef).to_u8(), 0xef);
+/// ```
 pub trait Key:
     Copy + Shl<u8, Output = Self> + Shr<u8, Output = Self> + Sized
 {

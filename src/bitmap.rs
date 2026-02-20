@@ -21,10 +21,7 @@ where
     /// Creates a new unpopulated `LeafBitmap`.
     #[inline(always)]
     pub(crate) fn new() -> Self {
-        Bitmap {
-            bits: 0u64,
-            _phantom: PhantomData,
-        }
+        Bitmap { bits: 0u64, _phantom: PhantomData }
     }
 
     /// Returns the internal index of the given leaf ID.
