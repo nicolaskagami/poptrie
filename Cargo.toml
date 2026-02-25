@@ -14,4 +14,11 @@ categories = ["network-programming", "data-structures", "no-std"]
 [dependencies]
 
 [dev-dependencies]
+criterion = "0.8.2"
 proptest = "1.10.0"
+rand = "0.10.0"
+rand_chacha = "0.10.0"
+
+[[bench]]
+name = "lpm_benches"
+harness = false
