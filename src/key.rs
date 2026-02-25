@@ -1,6 +1,9 @@
 use core::ops::{Shl, Shr};
 
-/// A trait for types that can be used as keys in the poptrie.
+/// A trait for types that can be used as keys in the [poptrie](crate::Poptrie).
+///
+/// This is currently not sealed to allow for custom `Key` types.
+/// Future versions may change this, which would be a breaking change.
 ///
 /// - Needs to inform its bit width and a `to_u8` method that returns its 8 least significant bits.
 /// - Needs to implement `rotate_right` method that rotates the key by `n` bits to the right.
@@ -8,9 +11,8 @@ use core::ops::{Shl, Shr};
 /// # Examples
 ///
 /// Implementing `Key` for a custom newtype:
-///
 /// ```
-/// use poptrie::key::Key;
+/// use poptrie::Key;
 /// use core::ops::{Shl, Shr};
 ///
 /// #[derive(Clone, Copy)]
@@ -38,8 +40,11 @@ use core::ops::{Shl, Shr};
 pub trait Key:
     Copy + Shl<u8, Output = Self> + Shr<u8, Output = Self> + Sized
 {
+    /// The number of bits in the key.
     const BITS: u8;
+    /// Converts the least significant bits of the key to a u8.
     fn to_u8(self) -> u8;
+    /// Rotates the key to the right by `n` bits.
     fn rotate_right(self, n: u32) -> Self;
 }
 
@@ -71,12 +76,20 @@ impl Key for u128 {
 
 /// Extract `len` bits from `key`, starting from `offset` bits from the most
 /// significant bit. Bit position is exact (msb aligned) and zero-padded to the right.
-///
-///  MSB |---------- offset -----------|----- len -----|---remaining---| LSB
-///                                     ^^^^^^^^^^^^^^^
-///                                     extracted  bits
-///
 /// - `len` must be at most 8 since where returning a `u8`.
+///``` text
+/// MSB |------------------------key-------------------------| LSB
+///     |------ offset ------|----- len ----|---remaining----|
+///                           ^^^^^^^^^^^^^^
+///                           extracted bits
+///```
+/// If `len` + `offset` > K::BITS, the extraction will be zero-padded from the right:
+///``` text
+/// MSB |------------------------key-------------------------| LSB
+///     |---------------- offset -----------------|----- len ----|
+///                                               |^^^^^^^^^^0000|
+///                                                extracted bits
+///```
 #[inline(always)]
 pub(crate) fn extract_bits<K>(key: K, offset: u8, len: u8) -> u8
 where
@@ -86,15 +99,24 @@ where
         & ((1u16 << len) - 1) as u8
 }
 
-/// Extract `len` bits from `key`, starting from `offset` bits from the most
+/// Extracts `len` bits from `key`, starting from `offset` bits from the most
 /// significant bit. Significant bits are lsb-aligned and zero-padded to the left.
-///
-///  MSB |---------- offset -----------|----- len -----|---remaining---| LSB
-///                                     ^^^^^^^^^^^^^^^
-///                                     extracted  bits
-///
-/// - If `len` + `offset` > K::BITS, the extraction will be saturated.
 /// - `len` must be at most 8 since where returning a `u8`.
+///
+/// ``` text
+/// MSB |------------------------key-------------------------| LSB
+///     |------ offset ------|----- len ----|---remaining----|
+///                           ^^^^^^^^^^^^^^
+///                           extracted bits
+///```
+/// If `len` + `offset` > `K::BITS`, the extraction will be saturated:
+///
+/// ``` text
+/// MSB |------------------------key-------------------------| LSB
+///     |---------------- offset -----------------|----- len ----|
+///                                           |0000^^^^^^^^^^|
+///                                            extracted bits
+///```
 #[inline(always)]
 pub(crate) fn extract_bits_saturated<K>(key: K, offset: u8, len: u8) -> u8
 where

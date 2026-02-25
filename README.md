@@ -2,7 +2,11 @@ Poptrie
 ====
 A pure Rust implementation of [Poptrie](https://dl.acm.org/doi/abs/10.1145/2829988.2787474), a data structure for efficient longest-prefix matching (LPM) lookups.
 
-Poptrie uses bitmaps combined with popcount to achieve fast IP routing table lookups with high cache locality. During lookup, the key is consumed in the biggest step that can be represented in a bitmap for which the native popcount instruction exists (i.e. 6-bit steps in a 64-bit bitmap).
+Poptrie uses bitmaps combined with the popcount instruction to achieve very fast longest-prefix lookups. 
+During lookup, the key is consumed in the biggest step that can be represented in a bitmap for which the native popcount instruction exists (i.e. 6-bit steps in a 64-bit bitmap).
+It is similar to how a tree-bitmap works, but with a more contiguous use of memory, trading insertion speed for cache locality.
+
+This is particularly useful for IP routing tables, where the longest-prefix matching is a common operation and insertions are comparatively rare.
 
 [![CI](https://github.com/nicolaskagami/poptrie/actions/workflows/ci.yml/badge.svg)](https://github.com/nicolaskagami/poptrie/actions)
 [![Crates.io](https://img.shields.io/crates/v/poptrie)](https://crates.io/crates/poptrie)
@@ -12,15 +16,16 @@ Poptrie uses bitmaps combined with popcount to achieve fast IP routing table loo
 
 ### Features
 
-- Pure rust, `no_std`, no external dependencies, no `unsafe` code. 
+- Pure rust, `no_std`, no external dependencies, no `unsafe` code. Does require `alloc`.
 - Generic over key type (e.g. `u32` for IPv4, `u128` for IPv6).
 - Supports insertion, deletion, contains, and lookup operations.
 
-## Installation
+## Usage
 
-```toml
-[dependencies]
-poptrie = { git = "https://github.com/nicolaskagami/poptrie" }
+### Installation
+
+```bash
+cargo add poptrie
 ```
 ### Example
 
@@ -56,25 +61,34 @@ assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 1, 5])), Some(&"192.168.0.0
 | `insert(key, key_length, value)` | Insert a value associated with the given prefix |
 | `lookup(key)` | Longest-prefix match lookup, returns `Option<&V>` |
 | `contains_key(key, key_length)` | Returns `true` if the exact prefix is present |
-| `remove(key, key_length)` | Remove a prefix and return its value |### License
+| `remove(key, key_length)` | Remove a prefix and return its value |
 
 ### Lookup performance
 
-Benchmarked with random lookups on tables of 1k, 10k and 100k random prefixes. All contenders were built with `RUSTFLAGS="-C target-cpu=native"`, which enables the use of architecture-specific instructions, if available. This is critical for performance as the poptrie relies on native `POPCNT` and bit manipulation instructions (e.g. `BEXTR` on x86) to achieve its performance characteristics.
+This crate's lookup performance beats other trie-based implementations, including the original poptrie ([pixos/poptrie](https://github.com/pixos/poptrie)).
+
+Benchmarked with random lookups on tables of 1k, 10k and 100k random prefixes. 
+All contenders were built with `RUSTFLAGS="-C target-cpu=native"`, which enables the use of architecture-specific instructions, if available. 
+This is critical for performance as the poptrie relies on native `POPCNT` and bit manipulation instructions (e.g. `BEXTR` on x86) to achieve its performance characteristics.
 
 | Implementation | 1k prefixes | 10k prefixes | 100k prefixes |
 |---|---|---|---|
 | **nicolaskagami/poptrie** (this crate) | 462.9 Mlookups/s | 326.6 Mlookups/s | 171.1 Mlookups/s |
+| [pixos/poptrie](https://github.com/pixos/poptrie) (with Rust bindings) | 402.9 Mlookups/s | 322.6 Mlookups/s | 161.24 Mlookups/s |
 | [tiborschneider/prefix-trie](https://github.com/tiborschneider/prefix-trie) | 296.9 Mlookups/s | 292.9 Mlookups/s | 110.5 Mlookups/s |
 | [oxidecomputer/poptrie](https://github.com/oxidecomputer/poptrie) | 270.1 Mlookups/s | 197.7 Mlookups/s | 86.9 Mlookups/s |
 
 > Benchmarked on an AMD Ryzen 9 7900 (12-core, x86_64), Linux kernel 6.18, rustc 1.93.1.
 
+Running the benchmarks:
 
+``` bash
+RUSTFLAGS="-C target-cpu=native" cargo bench
+```
 
 ### Reference 
 
-Asai, Hirochika, and Yasuhiro Ohara. "**[Poptrie: A Compressed Trie with Population Count for Fast and Scalable Software IP Routing Table Lookup](https://doi.org/10.1145/2829988.2787474)** ACM SIGCOMM Computer Communication Review 45.4 (2015): 57-70.
+Asai, Hirochika, and Yasuhiro Ohara. **[Poptrie: A Compressed Trie with Population Count for Fast and Scalable Software IP Routing Table Lookup](https://doi.org/10.1145/2829988.2787474)** ACM SIGCOMM Computer Communication Review 45.4 (2015): 57-70.
 
 ### License 
 

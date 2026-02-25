@@ -1,20 +1,28 @@
 //! # poptrie
 //!
-//! A Poptrie is a data structure for efficient longest-prefix matching. It's similar to a tree
-//! bitmap, but keeps nodes in a single array.
-//! A pure Rust implementation of [Poptrie](https://dl.acm.org/doi/10.1145/2740070.2626377), a
-//! data structure for efficient longest-prefix matching (LPM) lookups.
+//!
+//! A pure Rust implementation of [Poptrie](https://dl.acm.org/doi/abs/10.1145/2829988.2787474),
+//! a data structure for efficient longest-prefix matching (LPM) lookups.
 //!
 //! Poptrie uses bitmaps combined with the popcount instruction to achieve fast IP routing
 //! table lookups with high cache locality. During lookup, the key is consumed in the biggest
 //! step that can be represented in a bitmap for which the native popcount instruction exists
-//! (i.e. 6-bit steps in a 64-bit bitmap).
+//! (i.e. 6-bit steps in a 64-bit bitmap), similarly to how a tree-bitmap works, but with a
+//! more contiguous use of memory, trading insertion speed for cache locality.
+//!
+//! This is particularly useful for IP routing tables, where the longest-prefix matching is a
+//! common operation and insertions are comparatively rare.
+//!
+//! # Reference
+//! Asai, Hirochika, and Yasuhiro Ohara. **[Poptrie: A Compressed Trie with Population Count for Fast and Scalable Software IP Routing Table Lookup](https://doi.org/10.1145/2829988.2787474)** ACM SIGCOMM Computer Communication Review 45.4 (2015): 57-70.
+
 #![no_std]
 extern crate alloc;
 
 mod bitmap;
-pub mod key;
+mod key;
 mod value_index;
+pub use key::Key;
 
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
@@ -22,7 +30,6 @@ use alloc::vec::Vec;
 use bitmap::*;
 use core::cmp::min;
 use core::marker::PhantomData;
-use key::*;
 use value_index::ValueIndex;
 
 /// The maximum number of bits we can consume from the prefix at a time.
@@ -35,8 +42,8 @@ const STRIDE: u8 = 6;
 ///
 /// # Type Parameters
 ///
-/// * `K` - The key type (e.g., `u32` for IPv4, `u128` for IPv6)
-/// * `T` - The value type associated with each prefix
+/// * `K`: [`Key`] - The key type (e.g., `u32` for IPv4, `u128` for IPv6)
+/// * `V` - The value type associated with each prefix
 ///
 /// # Examples
 ///
@@ -57,7 +64,7 @@ const STRIDE: u8 = 6;
 /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some(&"10.0.0.0/8"));
 /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), None);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Poptrie<K, V>
 where
     K: Key,
@@ -138,10 +145,7 @@ where
         let current_value_index =
             ValueIndex::new((self.values.len() - 1) as u32);
 
-        // Keep track of the default value
         let mut default_value_index = ValueIndex::NONE;
-
-        // Keep track of where we are in the key
         let mut key_offset = 0;
 
         // First node is root
@@ -153,7 +157,6 @@ where
         while key_length >= key_offset + STRIDE {
             let local_id = StrideId::from_key(key, key_offset, STRIDE);
 
-            // Calculate the full node index
             let full_node_index = (parent_node.node_base
                 + parent_node.node_bitmap.bitmap_index(local_id))
                 as usize;
@@ -168,9 +171,6 @@ where
 
             // Check if there's already a node with `local_id`
             if !parent_node.node_bitmap.contains(local_id) {
-                // If there's no node with `local_id`, insert one
-
-                // Calculate the next bases
                 let (next_node_base, next_leaf_base) =
                     self.find_next_base(full_node_index);
 
@@ -210,17 +210,14 @@ where
                 self.nodes[full_node_index].leaf_bitmap.set(StrideId(0));
             }
 
-            // Now this node is the next parent node
             parent_node_index = full_node_index;
             parent_node = &self.nodes[parent_node_index];
 
-            // Advance the key offset
             key_offset += STRIDE;
         }
 
         // Can't consume a whole STRIDE, so we handle the remainder.
         let remaining_length = key_length - key_offset;
-
         let prefix_id = PrefixId::from_key(key, key_offset, remaining_length);
 
         // Store the value index for that prefix chunk
