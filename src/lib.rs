@@ -286,7 +286,7 @@ where
         let leaf_base = parent_node.leaf_base;
         let value_index = self.leaves[(leaf_base + leaf_index) as usize];
 
-        value_index.get().map(|i| &self.values[i as usize])
+        value_index.get().map(|i| &self.values[i])
     }
 
     /// Returns `true` if the trie contains an entry for the exact prefix

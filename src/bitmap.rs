@@ -68,6 +68,7 @@ where
 /// This is so that the parent prefix can be directly calculated as: `parent` = `(leaf_id - 1) >> 1`, just like in a heap.
 /// - Valid ranges are `0..2^(MAX_LEN + 1)`.
 /// - `prefix` is the numerical representation of the last valid segment of the prefix, not a mask.
+///
 /// We don't need to set its bitmap to `u128` at the moment because we reject full STRIDEs, those should always go into their own node, even if it becomes a stride of 0.
 /// This crucially halves the representational space, allowing us to use the most effective popcount implementation.
 #[repr(transparent)]
@@ -122,9 +123,9 @@ impl StrideId {
     }
 }
 
-impl Into<u8> for StrideId {
-    fn into(self) -> u8 {
-        self.0
+impl From<StrideId> for u8 {
+    fn from(val: StrideId) -> Self {
+        val.0
     }
 }
 
