@@ -3,6 +3,7 @@ use std::net::Ipv4Addr;
 
 /// Reference `HashMap` implementation for LPM
 // TODO: Generify to K
+#[derive(Debug, Default)]
 pub struct HashMapLpm<T> {
     map: HashMap<(Ipv4Addr, u8), T>,
 }

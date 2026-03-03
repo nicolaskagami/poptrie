@@ -1,3 +1,4 @@
+#![allow(clippy::unusual_byte_groupings)] // Grouped 6 by 6 because that's the current STRIDE
 use core::net::Ipv6Addr;
 
 use poptrie::Poptrie;

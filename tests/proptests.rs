@@ -51,7 +51,7 @@ proptest! {
         // Insert all prefixes into both implementations
         for (prefix, value) in &prefixes {
             poptrie.insert(prefix.addr.to_bits(),prefix.prefix_len, *value);
-            reference.insert(prefix.addr.clone(), prefix.prefix_len, *value);
+            reference.insert(prefix.addr, prefix.prefix_len, *value);
         }
 
         // Get 10% of prefixes for deletion
@@ -62,7 +62,7 @@ proptest! {
 
             // Delete
             poptrie.remove(prefix.addr.to_bits(), prefix.prefix_len);
-            reference.remove(prefix.addr.clone(), prefix.prefix_len);
+            reference.remove(prefix.addr, prefix.prefix_len);
 
             // Assert that the poptrie no longer contains the prefix after deletion
             prop_assert!(!poptrie.contains_key(prefix.addr.to_bits(), prefix.prefix_len));
