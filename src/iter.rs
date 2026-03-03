@@ -29,6 +29,11 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
         // - Fix the parent's bitmaps with the information above.
         let mut defaults = vec![ValueIndex::NONE];
         let mut level = 0;
+
+        // Keeping track of node count and which nodes need to have their node bases set.
+        let mut node_count = 1;
+        let mut nodes_to_process = 0..1;
+
         while !items.is_empty() {
             // Remove all leaves for this level and add them to reference
             for (path, len, key, value) in
@@ -108,11 +113,11 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
 
             // Now we can calculate node bases for all nodes of level-1 since they have the correct bitmaps.
             // TODO: don't recalculate so much - we should only do it on for level-1
-            let mut node_count = 1;
-            for node in poptrie.nodes.iter_mut() {
+            for node in poptrie.nodes[nodes_to_process.clone()].iter_mut() {
                 node.node_base = node_count;
                 node_count += node.node_bitmap.pop_count();
             }
+            nodes_to_process = nodes_to_process.end..poptrie.nodes.len();
 
             level += 1;
         }
