@@ -1,12 +1,11 @@
 //! Proptests for Poptrie
-mod utils;
+mod common;
+use common::HashMapLpm;
+use common::Ipv4Prefix;
 use core::net::Ipv4Addr;
 use poptrie::Poptrie;
 use proptest::prelude::*;
 use std::collections::HashMap;
-use utils::Ipv4Prefix;
-
-use crate::utils::HashMapLpm;
 
 /// Generate arbitrary IPv4 addresses
 fn ipv4_strategy() -> impl Strategy<Value = Ipv4Addr> {
