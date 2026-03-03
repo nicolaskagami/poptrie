@@ -20,8 +20,10 @@
 extern crate alloc;
 
 mod bitmap;
+mod iter;
 mod key;
 mod value_index;
+
 pub use key::Key;
 
 use alloc::collections::btree_map::BTreeMap;

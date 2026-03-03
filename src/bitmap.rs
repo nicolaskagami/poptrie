@@ -111,7 +111,7 @@ where
 
 /// A unique identifier for a stride in the poptrie.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct StrideId(pub(crate) u8);
 impl StrideId {
     pub(crate) fn from_key<K: Key>(
