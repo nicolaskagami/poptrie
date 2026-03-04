@@ -115,10 +115,8 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
         #[allow(clippy::needless_range_loop)]
         for i in 1..poptrie.nodes.len() {
             poptrie.nodes[i].leaf_base = poptrie.leaves.len() as u32;
-            poptrie.leaves.push(ValueIndex::NONE);
-            poptrie.nodes[i].leaf_bitmap.set(StrideId(0));
 
-            let _ = poptrie.calculate_leaf_ranges(i, defaults[i]);
+            poptrie.build_leaf_ranges(i, defaults[i]);
         }
 
         poptrie
