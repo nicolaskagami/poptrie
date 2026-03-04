@@ -2,7 +2,10 @@ use core::marker::PhantomData;
 
 use alloc::collections::btree_map::BTreeMap;
 
-use crate::key::{Key, extract_bits, extract_bits_saturated};
+use crate::{
+    STRIDE,
+    key::{Key, extract_bits, extract_bits_saturated},
+};
 
 /// A generic bitmap for storing u8 encoded ids of 0..63
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,7 +85,7 @@ where
 /// This crucially halves the representational space, allowing us to use the most effective popcount implementation.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct PrefixId(u8);
+pub(crate) struct PrefixId(pub(crate) u8);
 impl PrefixId {
     /// Creates a new `PrefixId` from a prefix and length.
     pub(crate) fn new(prefix: u8, len: u8) -> Self {
@@ -97,6 +100,29 @@ impl PrefixId {
     /// Returns the parent `PrefixId`.
     pub(crate) fn parent(&self) -> Self {
         PrefixId((self.0 - 1) >> 1)
+    }
+
+    /// Returns the prefix length
+    pub(crate) fn prefix_length(&self) -> u8 {
+        // This is just a BSR
+        (self.0 + 1).ilog2() as u8
+    }
+
+    /// Returns the original (prefix, length)
+    pub(crate) fn components(&self) -> (u8, u8) {
+        let len = self.prefix_length();
+        let prefix = self.0 - ((1u8 << len) - 1);
+        (prefix, len)
+    }
+
+    /// Gives the equivalent `StrideId`
+    pub(crate) fn stride_id(&self) -> StrideId {
+        if self.0 == 0 {
+            return StrideId(0);
+        }
+
+        let (prefix, len) = self.components();
+        StrideId(prefix << (STRIDE - len))
     }
 }
 
@@ -191,5 +217,17 @@ mod tests {
         assert_eq!(find_leaf_lpm(&tree, PrefixId::new(3, 2)), Some(1));
         // None should cover the 0/1
         assert_eq!(find_leaf_lpm(&tree, PrefixId::new(0, 1)), None);
+    }
+
+    #[test]
+    fn test_prefix_to_stride() {
+        for key in 0u32..256 {
+            for stride in 0u8..STRIDE {
+                // PrefixIds are never full strides
+                let prefix = PrefixId::from_key(key, 0, stride);
+                let stride = StrideId::from_key(key, 0, stride);
+                assert_eq!(prefix.stride_id(), stride);
+            }
+        }
     }
 }

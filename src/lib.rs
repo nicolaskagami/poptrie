@@ -510,17 +510,69 @@ where
         node_index: usize,
         default_value_index: ValueIndex,
     ) {
-        for prefix in 0..(1 << (STRIDE - 1)) {
-            let value = find_leaf_lpm(
-                &self.reference[node_index],
-                PrefixId::new(prefix, STRIDE - 1),
-            )
-            .unwrap_or(default_value_index);
+        // Idea: try to iterate over reference, adding in increasing order of prefix id
+        // if prefix id 0 doesn't exist it will use default
+        // For each prefix in tree:
+        // - Remember the value currently assigned (with leaf id)
+        // - Push a leaf at the correct place
+        // - Push a terminating leaf wherever the range would finish
+        // Since prefix id starts with the smallest prefix lengths, terminator should always have the value that existed initially.
+        //
 
-            let leaf_id = StrideId(prefix << 1);
+        let leaf_base = self.nodes[node_index].leaf_base as usize;
+        // Prepare default
+        let mut references = self.reference[node_index].iter().peekable();
+        let default = if let Some((PrefixId(0), _)) = references.peek() {
+            *references.next().unwrap().1
+        } else {
+            default_value_index
+        };
 
-            self.leaves.push(value);
-            self.nodes[node_index].leaf_bitmap.set(leaf_id);
+        self.leaves.insert(leaf_base, default);
+        self.nodes[node_index].leaf_bitmap.set(StrideId(0));
+
+        // A bit of math now:
+        // prefix_id | prefix/len | base | cover | next
+        // 0         | 0/0        | 0    | 64    | 64 (out)
+        // 1         | 0/1        | 0    | 32    | 32
+        // 2         | 1/1        | 32   | 32    | 64 (out)
+        // 3         | 0/2        | 0    | 16    | 16
+        // 4         | 1/2        | 16   | 16    | 32
+        // ...
+        // - next = base + cover
+        // - next = (prefix + 1) << (STRIDE - len)
+        for (prefix_id, value) in &self.reference[node_index] {
+            let (prefix, len) = prefix_id.components();
+            let leaf_id = prefix_id.stride_id();
+            let leafvec_index =
+                self.nodes[node_index].leaf_bitmap.leafvec_index(leaf_id);
+            let initial_value = self.leaves[leaf_base + leafvec_index as usize];
+
+            // Insert new leaf or rewrite a possible terminator
+            let leaf_bitmap_index = leaf_base
+                + self.nodes[node_index].leaf_bitmap.bitmap_index(leaf_id)
+                    as usize;
+            if !self.nodes[node_index].leaf_bitmap.contains(leaf_id) {
+                self.leaves.insert(leaf_bitmap_index, *value);
+                self.nodes[node_index].leaf_bitmap.set(leaf_id);
+            } else {
+                self.leaves[leaf_bitmap_index] = *value;
+            }
+
+            let next_id = StrideId((prefix + 1) << (STRIDE - len));
+            // Check if we need to insert a terminator
+            // We check if:
+            // - It's the end of representation
+            // - It already exists, meaning
+            if next_id.0 != (1 << STRIDE)
+                && !self.nodes[node_index].leaf_bitmap.contains(next_id)
+            {
+                let next_bitmap_index = leaf_base
+                    + self.nodes[node_index].leaf_bitmap.bitmap_index(next_id)
+                        as usize;
+                self.leaves.insert(next_bitmap_index, initial_value);
+                self.nodes[node_index].leaf_bitmap.set(next_id);
+            }
         }
     }
 
