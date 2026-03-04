@@ -61,15 +61,7 @@ fn bench_lookup(c: &mut Criterion) {
         let prefixes = generate_prefixes(*size, 24);
         let lookups = generate_lookups(*size, 42);
 
-        let mut poptrie = Poptrie::new();
-
-        for ((prefix, length), val) in prefixes {
-            poptrie.insert(
-                black_box(prefix),
-                black_box(length),
-                black_box(val),
-            );
-        }
+        let poptrie: Poptrie<_, _> = prefixes.into_iter().collect();
 
         group.throughput(Throughput::Elements(*size as u64));
 
@@ -89,6 +81,48 @@ fn bench_lookup(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_lookup);
+fn bench_insert(c: &mut Criterion) {
+    let mut group = c.benchmark_group("insert");
+    for size in [1_000, 10_000, 100_000].iter() {
+        let prefixes = generate_prefixes(*size, 99);
+
+        group.throughput(Throughput::Elements(*size as u64));
+
+        // Baseline insertion
+        group.bench_with_input(
+            BenchmarkId::new("manual", size),
+            &prefixes,
+            |b, prefixes| {
+                b.iter(|| {
+                    let mut poptrie = Poptrie::new();
+                    for &((prefix, length), val) in prefixes {
+                        poptrie.insert(
+                            black_box(prefix),
+                            black_box(length),
+                            black_box(val),
+                        );
+                    }
+                    black_box(poptrie)
+                })
+            },
+        );
+
+        // Bulk insertion
+        group.bench_with_input(
+            BenchmarkId::new("from_iter", size),
+            &prefixes,
+            |b, prefixes| {
+                b.iter(|| {
+                    let poptrie: Poptrie<_, _> =
+                        black_box(prefixes.iter().copied().collect());
+                    black_box(poptrie)
+                })
+            },
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_insert, bench_lookup);
 
 criterion_main!(benches);
