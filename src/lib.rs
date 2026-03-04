@@ -20,8 +20,10 @@
 extern crate alloc;
 
 mod bitmap;
+mod iter;
 mod key;
 mod value_index;
+
 pub use key::Key;
 
 use alloc::collections::btree_map::BTreeMap;
@@ -497,6 +499,31 @@ where
         changed
     }
 
+    /// Very similar to `calculate_leaf_ranges`, but builds the leaf ranges for a given node index.
+    ///
+    /// Major differences:
+    /// - Doesn't assume default leaves.
+    /// - Doesn't change subsequent nodes.
+    /// - Assumes no leaves have been placed for this node.
+    fn build_leaf_ranges(
+        &mut self,
+        node_index: usize,
+        default_value_index: ValueIndex,
+    ) {
+        for prefix in 0..(1 << (STRIDE - 1)) {
+            let value = find_leaf_lpm(
+                &self.reference[node_index],
+                PrefixId::new(prefix, STRIDE - 1),
+            )
+            .unwrap_or(default_value_index);
+
+            let leaf_id = StrideId(prefix << 1);
+
+            self.leaves.push(value);
+            self.nodes[node_index].leaf_bitmap.set(leaf_id);
+        }
+    }
+
     /// Update the children defaults for a given parent node index.
     fn update_children(
         &mut self,
@@ -536,7 +563,7 @@ where
 }
 
 /// An internal node in the trie
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Node {
     /// Debug field for keeping track of stride ascendancy.
     #[cfg(test)]

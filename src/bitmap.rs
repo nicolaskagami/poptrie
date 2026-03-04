@@ -14,6 +14,15 @@ where
     _phantom: PhantomData<T>,
 }
 
+impl<T> Default for Bitmap<T>
+where
+    T: Copy + Into<u8>,
+{
+    fn default() -> Self {
+        Bitmap { bits: 0u64, _phantom: PhantomData }
+    }
+}
+
 impl<T> Bitmap<T>
 where
     T: Copy + Into<u8>,
@@ -111,7 +120,7 @@ where
 
 /// A unique identifier for a stride in the poptrie.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct StrideId(pub(crate) u8);
 impl StrideId {
     pub(crate) fn from_key<K: Key>(
