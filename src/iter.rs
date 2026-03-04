@@ -16,8 +16,8 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
                 let path: Vec<_> = (0..(len / STRIDE))
                     .map(|i| StrideId::from_key(key, i * STRIDE, STRIDE))
                     .collect();
-                // Let's keep the path and the last parent
-                (path, len, key, value, 0)
+                // Let's add the path and the last parent
+                (path, 0, len, key, value)
             })
             .collect();
 
@@ -37,8 +37,8 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
 
         while !items.is_empty() {
             // Remove all leaves for this level and add them to reference
-            for (path, len, key, value, mut parent_node_index) in
-                items.extract_if(.., |(path, _, _, _, _)| path.len() <= level)
+            for (path, mut parent_node_index, len, key, value) in
+                items.extract_if(.., |(path, ..)| path.len() <= level)
             {
                 poptrie.values.push(value);
                 let current_value_index =
@@ -64,7 +64,7 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
             }
 
             // Deal with all internal nodes of this level
-            for (path, _, _, _, parent_node_index) in items.iter_mut() {
+            for (path, parent_node_index, ..) in items.iter_mut() {
                 // Point of this is calculating the bitmap count and node_base of the nodes in level -1
                 // We MUST have already added its parents
                 if level > 0 {
@@ -99,7 +99,6 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
             }
 
             // Now we can calculate node bases for all nodes of level-1 since they have the correct bitmaps.
-            // TODO: don't recalculate so much - we should only do it on for level-1
             for node in poptrie.nodes[nodes_to_process.clone()].iter_mut() {
                 node.node_base = node_count;
                 node_count += node.node_bitmap.pop_count();
@@ -109,7 +108,7 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
             level += 1;
         }
 
-        // Now we need to calculate leaf bases and expand the leaves for all the parents of leaves (nodes in level)
+        // Now we need to calculate leaf bases and expand all leaves
         let _ = poptrie.calculate_leaf_ranges(0, ValueIndex::NONE);
         // Allow: `i` is used in `calculate_leaf_ranges` and that borrows mutably so we can't iter_mut
         #[allow(clippy::needless_range_loop)]
