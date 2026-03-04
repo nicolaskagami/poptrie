@@ -538,7 +538,7 @@ where
 }
 
 /// An internal node in the trie
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Node {
     /// Debug field for keeping track of stride ascendancy.
     #[cfg(test)]

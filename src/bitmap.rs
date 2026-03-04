@@ -14,6 +14,15 @@ where
     _phantom: PhantomData<T>,
 }
 
+impl<T> Default for Bitmap<T>
+where
+    T: Copy + Into<u8>,
+{
+    fn default() -> Self {
+        Bitmap { bits: 0u64, _phantom: PhantomData }
+    }
+}
+
 impl<T> Bitmap<T>
 where
     T: Copy + Into<u8>,

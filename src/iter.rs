@@ -16,7 +16,8 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
                 let path: Vec<_> = (0..(len / STRIDE))
                     .map(|i| StrideId::from_key(key, i * STRIDE, STRIDE))
                     .collect();
-                (path, len, key, value)
+                // Let's keep the path and the last parent
+                (path, len, key, value, 0)
             })
             .collect();
 
@@ -36,22 +37,21 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
 
         while !items.is_empty() {
             // Remove all leaves for this level and add them to reference
-            for (path, len, key, value) in
-                items.extract_if(.., |(path, _, _, _)| path.len() <= level)
+            for (path, len, key, value, mut parent_node_index) in
+                items.extract_if(.., |(path, _, _, _, _)| path.len() <= level)
             {
                 poptrie.values.push(value);
                 let current_value_index =
                     ValueIndex::new((poptrie.values.len() - 1) as u32);
 
-                let mut parent_node_index = 0;
-                for &local_id in &path {
+                if level > 0 {
+                    let local_id = path[level - 1];
                     let full_node_index = (poptrie.nodes[parent_node_index]
                         .node_base
                         + poptrie.nodes[parent_node_index]
                             .node_bitmap
                             .bitmap_index(local_id))
                         as usize;
-                    // We MUST have already added its parents
                     parent_node_index = full_node_index;
                 }
 
@@ -64,49 +64,36 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
             }
 
             // Deal with all internal nodes of this level
-            for (path, _, _, _) in &items {
+            for (path, _, _, _, parent_node_index) in items.iter_mut() {
                 // Point of this is calculating the bitmap count and node_base of the nodes in level -1
-                let mut parent_node_index = 0;
-                for local_id in path.iter().take(level) {
-                    let full_node_index = (poptrie.nodes[parent_node_index]
+                // We MUST have already added its parents
+                if level > 0 {
+                    let local_id = path[level - 1];
+                    let full_node_index = (poptrie.nodes[*parent_node_index]
                         .node_base
-                        + poptrie.nodes[parent_node_index]
+                        + poptrie.nodes[*parent_node_index]
                             .node_bitmap
-                            .bitmap_index(*local_id))
+                            .bitmap_index(local_id))
                         as usize;
-                    // We MUST have already added its parents
-                    parent_node_index = full_node_index;
+                    *parent_node_index = full_node_index;
                 }
-
-                // Add node if it doesn't exist
                 let local_id = path[level];
-                if !poptrie.nodes[parent_node_index]
+                // Add node if it doesn't exist
+                if !poptrie.nodes[*parent_node_index]
                     .node_bitmap
                     .contains(local_id)
                 {
-                    poptrie.nodes.push(Node::new(
-                        #[cfg(test)]
-                        [
-                            poptrie.nodes[parent_node_index]
-                                .debug_prefix
-                                .as_slice(),
-                            &[local_id],
-                        ]
-                        .concat(),
-                        0, // To be fixed later
-                        0, // To be fixed later
-                    ));
-
-                    poptrie.nodes[parent_node_index].node_bitmap.set(local_id);
+                    poptrie.nodes.push(Node::default());
+                    poptrie.nodes[*parent_node_index].node_bitmap.set(local_id);
                     poptrie.reference.push(BTreeMap::new());
 
                     // The parent must be ready to provide a default
                     let prefix_id = PrefixId::new(local_id.0, STRIDE).parent();
                     let default = find_leaf_lpm(
-                        &poptrie.reference[parent_node_index],
+                        &poptrie.reference[*parent_node_index],
                         prefix_id,
                     )
-                    .unwrap_or(defaults[parent_node_index]);
+                    .unwrap_or(defaults[*parent_node_index]);
                     defaults.push(default);
                 }
             }
@@ -123,9 +110,10 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
         }
 
         // Now we need to calculate leaf bases and expand the leaves for all the parents of leaves (nodes in level)
+        let _ = poptrie.calculate_leaf_ranges(0, ValueIndex::NONE);
         // Allow: `i` is used in `calculate_leaf_ranges` and that borrows mutably so we can't iter_mut
         #[allow(clippy::needless_range_loop)]
-        for i in 0..poptrie.nodes.len() {
+        for i in 1..poptrie.nodes.len() {
             poptrie.nodes[i].leaf_base = poptrie.leaves.len() as u32;
             poptrie.leaves.push(ValueIndex::NONE);
             poptrie.nodes[i].leaf_bitmap.set(StrideId(0));
