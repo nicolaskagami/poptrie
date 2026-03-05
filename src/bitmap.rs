@@ -127,6 +127,7 @@ impl PrefixId {
 }
 
 /// Returns internal index for the longest prefix match of a leaf ID.
+#[allow(unused)]
 #[inline(always)]
 pub(crate) fn find_leaf_lpm<T>(
     tree: &BTreeMap<PrefixId, T>,
