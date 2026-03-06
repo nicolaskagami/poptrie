@@ -164,10 +164,7 @@ where
                 as usize;
 
             // Find the default from the parent
-            let leaf_bitmap_index = (parent_node.leaf_base
-                + parent_node.leaf_bitmap.leafvec_index(local_id))
-                as usize;
-            default_value_index = self.leaves[leaf_bitmap_index];
+            default_value_index = self.get_default(parent_node_index, local_id);
 
             // Check if there's already a node with `local_id`
             if !parent_node.node_bitmap.contains(local_id) {
@@ -380,11 +377,7 @@ where
 
         while key_length >= key_offset + STRIDE {
             let local_id = StrideId::from_key(key, key_offset, STRIDE);
-
-            let leaf_bitmap_index = (parent_node.leaf_base
-                + parent_node.leaf_bitmap.leafvec_index(local_id))
-                as usize;
-            default_value_index = self.leaves[leaf_bitmap_index];
+            default_value_index = self.get_default(parent_node_index, local_id);
 
             // Check if there's already a node with `local_id`
             if !parent_node.node_bitmap.contains(local_id) {
@@ -446,14 +439,7 @@ where
         let ids = self.nodes[node_index].node_bitmap.bit_positions();
         let original_defaults: Vec<_> = ids
             .iter()
-            .map(|p| {
-                let leaf_bitmap_index = leaf_base
-                    + self.nodes[node_index]
-                        .leaf_bitmap
-                        .leafvec_index(StrideId(*p))
-                        as usize;
-                self.leaves[leaf_bitmap_index]
-            })
+            .map(|p| self.get_default(node_index, StrideId(*p)))
             .collect();
 
         let (new_bitmap, new_leaves) =
@@ -476,11 +462,7 @@ where
 
         // Check if position changed and update leaves accordingly
         for (i, id) in ids.iter().enumerate() {
-            let leaf_bitmap_index = leaf_base
-                + self.nodes[node_index]
-                    .leaf_bitmap
-                    .leafvec_index(StrideId(*id)) as usize;
-            let new_default = self.leaves[leaf_bitmap_index];
+            let new_default = self.get_default(node_index, StrideId(*id));
             if original_defaults[i] != new_default {
                 let child_index = self.nodes[node_index].node_base as usize + i;
                 self.calculate_leaf_ranges(child_index, new_default);
@@ -488,8 +470,26 @@ where
         }
     }
 
+    /// Gets the default for a node given its parent index and the stride id
+    /// that points to it.
+    fn get_default(
+        &self,
+        parent_node_index: usize,
+        node_stride_id: StrideId,
+    ) -> ValueIndex {
+        let parent_node = &self.nodes[parent_node_index];
+        let leaf_bitmap_index = parent_node.leaf_base
+            + self.nodes[parent_node_index]
+                .leaf_bitmap
+                .leafvec_index(node_stride_id);
+        self.leaves[leaf_bitmap_index as usize]
+    }
+
     /// Very similar to `build_leaf_ranges`, but used only for bulk insertion.
-    /// Presumes that there aren't leaves after it.
+    /// Assumptions:
+    /// - The node has no leaves.
+    /// - It won't need to fix leaf bases.
+    /// - It won't need to propagate changes.
     fn build_leaf_ranges_bulk_insert(
         &mut self,
         node_index: usize,
@@ -499,11 +499,11 @@ where
         let leaf_bitmap = &mut self.nodes[node_index].leaf_bitmap;
 
         let mut references = self.reference[node_index].iter().peekable();
-        let default = if let Some((PrefixId(0), _)) = references.peek() {
-            *references.next().unwrap().1
-        } else {
-            default_value_index
-        };
+        let default = references
+            .peek()
+            .take_if(|(p, _)| p.prefix_length() == 0)
+            .map(|(_, v)| **v)
+            .unwrap_or(default_value_index);
 
         self.leaves.insert(leaf_base, default);
         leaf_bitmap.set(StrideId(0));
@@ -586,6 +586,7 @@ impl Node {
 // 3         | 0/2        | 0    | 16    | 16
 // 4         | 1/2        | 16   | 16    | 32
 // ...
+// This means that:
 // - next = base + cover
 // - next = (prefix + 1) << (STRIDE - len)
 // TODO: Analyze performance characteristics of doing it in-band:
@@ -599,11 +600,11 @@ fn build_leaf_ranges(
 
     // Prepare default
     let mut references = reference.iter().peekable();
-    let default = if let Some((PrefixId(0), _)) = references.peek() {
-        *references.next().unwrap().1
-    } else {
-        default_value_index
-    };
+    let default = references
+        .peek()
+        .take_if(|(p, _)| p.prefix_length() == 0)
+        .map(|(_, v)| **v)
+        .unwrap_or(default_value_index);
 
     let mut leaves = vec![default];
     leaf_bitmap.set(StrideId(0));

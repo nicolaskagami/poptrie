@@ -96,13 +96,9 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
                     poptrie.reference.push(BTreeMap::new());
 
                     // The parent must be ready to provide a default
-                    let leaf_bitmap_index = (poptrie.nodes[*parent_node_index]
-                        .leaf_base
-                        + poptrie.nodes[*parent_node_index]
-                            .leaf_bitmap
-                            .leafvec_index(local_id))
-                        as usize;
-                    defaults.push(poptrie.leaves[leaf_bitmap_index]);
+                    defaults.push(
+                        poptrie.get_default(*parent_node_index, local_id),
+                    );
                 }
             }
 
