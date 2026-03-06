@@ -1,6 +1,6 @@
 use crate::{
     Key, Node, Poptrie, STRIDE,
-    bitmap::{PrefixId, StrideId, find_leaf_lpm},
+    bitmap::{PrefixId, StrideId},
     value_index::ValueIndex,
 };
 use alloc::vec;
@@ -63,7 +63,15 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
                     .insert(prefix_id, current_value_index);
             }
 
+            // Last step allows us to calculate the leaves
+            for i in nodes_to_process.clone() {
+                poptrie.nodes[i].leaf_base = poptrie.leaves.len() as u32;
+                poptrie.build_leaf_ranges_bulk_insert(i, defaults[i]);
+            }
+
             // Deal with all internal nodes of this level
+            // Having the leaves calculated for level-1 allows us to use the leafvec in this
+            // following step instead of the `find_leaf_lpm`.
             for (path, parent_node_index, ..) in items.iter_mut() {
                 // Point of this is calculating the bitmap count and node_base of the nodes in level -1
                 // We MUST have already added its parents
@@ -88,13 +96,13 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
                     poptrie.reference.push(BTreeMap::new());
 
                     // The parent must be ready to provide a default
-                    let prefix_id = PrefixId::new(local_id.0, STRIDE).parent();
-                    let default = find_leaf_lpm(
-                        &poptrie.reference[*parent_node_index],
-                        prefix_id,
-                    )
-                    .unwrap_or(defaults[*parent_node_index]);
-                    defaults.push(default);
+                    let leaf_bitmap_index = (poptrie.nodes[*parent_node_index]
+                        .leaf_base
+                        + poptrie.nodes[*parent_node_index]
+                            .leaf_bitmap
+                            .leafvec_index(local_id))
+                        as usize;
+                    defaults.push(poptrie.leaves[leaf_bitmap_index]);
                 }
             }
 
@@ -106,16 +114,6 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
             nodes_to_process = nodes_to_process.end..poptrie.nodes.len();
 
             level += 1;
-        }
-
-        // Now we need to calculate leaf bases and expand all leaves
-        let _ = poptrie.calculate_leaf_ranges(0, ValueIndex::NONE);
-        // Allow: `i` is used in `calculate_leaf_ranges` and that borrows mutably so we can't iter_mut
-        #[allow(clippy::needless_range_loop)]
-        for i in 1..poptrie.nodes.len() {
-            poptrie.nodes[i].leaf_base = poptrie.leaves.len() as u32;
-
-            poptrie.build_leaf_ranges(i, defaults[i]);
         }
 
         poptrie

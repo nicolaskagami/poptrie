@@ -6,7 +6,7 @@ proptest! {
     fn bulk_insertion_matches_manual_insertion(
         entries in prop::collection::vec(
             ((any::<u32>(), 0u8..=32u8), any::<u32>()),
-            0..20,
+            0..100,
         )
     ) {
         let entries: Vec<((u32, u8), u32)> = entries
