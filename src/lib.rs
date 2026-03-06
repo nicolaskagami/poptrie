@@ -225,9 +225,7 @@ where
             .insert(prefix_id, current_value_index);
 
         // Update the defaults for children
-        if self.calculate_leaf_ranges(parent_node_index, default_value_index) {
-            self.update_children(parent_node_index);
-        }
+        self.calculate_leaf_ranges(parent_node_index, default_value_index);
     }
 
     /// Lookup a key in the trie, performing longest-prefix match.
@@ -350,9 +348,7 @@ where
 
         self.reference[parent_node].remove(&prefix_id).map(|v| {
             // Update the leaf ranges
-            if self.calculate_leaf_ranges(parent_node, default_value_index) {
-                self.update_children(parent_node);
-            }
+            self.calculate_leaf_ranges(parent_node, default_value_index);
 
             // Update the value indices in all the leaves and references
             for higher_v in self
@@ -431,8 +427,9 @@ where
 
     /// Calculate the leaf ranges so they can be read with `leafvec_index`.
     ///
-    /// We'll need to recalculate the whole leaf bitmap, since the default may require multiple
-    /// ranges.
+    /// Propagates the changes to its children. The process is slightly
+    /// involved as more specific ranges may cut the representational space.
+    ///
     /// Example: default is 0/0 but we have a 0001/4, meaning we need:
     /// - bit 0: default (0000/4)
     /// - bit 1: other (0001/4)
@@ -441,9 +438,24 @@ where
         &mut self,
         node_index: usize,
         default_value_index: ValueIndex,
-    ) -> bool {
+    ) {
         // Currently using a not-in-place version
         let leaf_base = self.nodes[node_index].leaf_base as usize;
+
+        // Let's keep track of children's original defaults:
+        let ids = self.nodes[node_index].node_bitmap.bit_positions();
+        let original_defaults: Vec<_> = ids
+            .iter()
+            .map(|p| {
+                let leaf_bitmap_index = leaf_base
+                    + self.nodes[node_index]
+                        .leaf_bitmap
+                        .leafvec_index(StrideId(*p))
+                        as usize;
+                self.leaves[leaf_bitmap_index]
+            })
+            .collect();
+
         let (new_bitmap, new_leaves) =
             build_leaf_ranges(&self.reference[node_index], default_value_index);
 
@@ -455,19 +467,25 @@ where
         let balance =
             new_leaves.len() as isize - (old_end - leaf_base) as isize;
 
-        let bitmap_changed = new_bitmap != self.nodes[node_index].leaf_bitmap;
-        if bitmap_changed {
-            self.nodes[node_index].leaf_bitmap = new_bitmap;
-        }
-
-        let leaves_changed = self.leaves[leaf_base..old_end] != new_leaves[..];
+        self.nodes[node_index].leaf_bitmap = new_bitmap;
         self.leaves.splice(leaf_base..old_end, new_leaves);
 
         for node in &mut self.nodes[node_index + 1..] {
             node.leaf_base = (node.leaf_base as isize + balance) as u32;
         }
 
-        bitmap_changed || leaves_changed
+        // Check if position changed and update leaves accordingly
+        for (i, id) in ids.iter().enumerate() {
+            let leaf_bitmap_index = leaf_base
+                + self.nodes[node_index]
+                    .leaf_bitmap
+                    .leafvec_index(StrideId(*id)) as usize;
+            let new_default = self.leaves[leaf_bitmap_index];
+            if original_defaults[i] != new_default {
+                let child_index = self.nodes[node_index].node_base as usize + i;
+                self.calculate_leaf_ranges(child_index, new_default);
+            }
+        }
     }
 
     /// Very similar to `build_leaf_ranges`, but used only for bulk insertion.
@@ -511,41 +529,6 @@ where
                     leaf_base + leaf_bitmap.bitmap_index(next_id) as usize;
                 self.leaves.insert(next_bitmap_index, initial_value);
                 leaf_bitmap.set(next_id);
-            }
-        }
-    }
-
-    /// Update the children defaults for a given parent node index.
-    /// Requires that the parent's leaves be up-to-date.
-    fn update_children(&mut self, parent_node_index: usize) {
-        let node_base = self.nodes[parent_node_index].node_base as usize;
-
-        // Check every possible
-        for prefix in 0..(1 << (STRIDE)) {
-            let child_id = StrideId(prefix);
-
-            if self.nodes[parent_node_index].node_bitmap.contains(child_id) {
-                let child_node_index = self.nodes[parent_node_index]
-                    .node_bitmap
-                    .bitmap_index(child_id);
-                let full_child_node_index =
-                    node_base + child_node_index as usize;
-
-                // Calculate the default for the child
-                let leaf_bitmap_index = (self.nodes[parent_node_index]
-                    .leaf_base
-                    + self.nodes[parent_node_index]
-                        .leaf_bitmap
-                        .leafvec_index(child_id))
-                    as usize;
-                let default_value = self.leaves[leaf_bitmap_index];
-
-                // If something changed, update its children
-                if self
-                    .calculate_leaf_ranges(full_child_node_index, default_value)
-                {
-                    self.update_children(full_child_node_index);
-                }
             }
         }
     }

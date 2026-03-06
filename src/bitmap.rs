@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use alloc::collections::btree_map::BTreeMap;
+use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 
 use crate::{
     STRIDE,
@@ -70,6 +70,17 @@ where
     #[inline(always)]
     pub(crate) fn pop_count(&self) -> u32 {
         self.bits.count_ones()
+    }
+
+    /// Returns a vec with the sorted positions of the populated bits.
+    pub fn bit_positions(&self) -> Vec<u8> {
+        let mut bitmap = self.bits;
+        let mut positions = Vec::with_capacity(bitmap.count_ones() as usize);
+        while bitmap != 0 {
+            positions.push(bitmap.trailing_zeros() as u8);
+            bitmap &= bitmap - 1;
+        }
+        positions
     }
 }
 
