@@ -46,13 +46,8 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
 
                 if level > 0 {
                     let local_id = path[level - 1];
-                    let full_node_index = (poptrie.nodes[parent_node_index]
-                        .node_base
-                        + poptrie.nodes[parent_node_index]
-                            .node_bitmap
-                            .bitmap_index(local_id))
-                        as usize;
-                    parent_node_index = full_node_index;
+                    parent_node_index = poptrie.nodes[parent_node_index]
+                        .get_child_index(local_id);
                 }
 
                 let key_offset = path.len() as u8 * STRIDE;
@@ -77,13 +72,8 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
                 // We MUST have already added its parents
                 if level > 0 {
                     let local_id = path[level - 1];
-                    let full_node_index = (poptrie.nodes[*parent_node_index]
-                        .node_base
-                        + poptrie.nodes[*parent_node_index]
-                            .node_bitmap
-                            .bitmap_index(local_id))
-                        as usize;
-                    *parent_node_index = full_node_index;
+                    *parent_node_index = poptrie.nodes[*parent_node_index]
+                        .get_child_index(local_id);
                 }
                 let local_id = path[level];
                 // Add node if it doesn't exist

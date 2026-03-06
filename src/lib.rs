@@ -158,10 +158,7 @@ where
         // We MUST use '>=' here to ensure that full strides always direct towards inner nodes.
         while key_length >= key_offset + STRIDE {
             let local_id = StrideId::from_key(key, key_offset, STRIDE);
-
-            let full_node_index = (parent_node.node_base
-                + parent_node.node_bitmap.bitmap_index(local_id))
-                as usize;
+            let full_node_index = parent_node.get_child_index(local_id);
 
             // Find the default from the parent
             default_value_index = self.get_default(parent_node_index, local_id);
@@ -263,11 +260,7 @@ where
         // Should always try internal nodes first.
         while parent_node.node_bitmap.contains(local_id) {
             // If there's a valid internal node, traverse it
-            let node_base = parent_node.node_base;
-            let node_offset = parent_node.node_bitmap.bitmap_index(local_id);
-
-            // Update the parent node
-            parent_node_index = (node_base + node_offset) as usize;
+            parent_node_index = parent_node.get_child_index(local_id);
             parent_node = &self.nodes[parent_node_index];
 
             // Update key offset and local ID
@@ -385,12 +378,8 @@ where
                 break;
             }
 
-            // Calculate the full node index
-            parent_node_index = (parent_node.node_base
-                + parent_node.node_bitmap.bitmap_index(local_id))
-                as usize;
-
-            // Now this node is the next parent node
+            // Traverse to the child node
+            parent_node_index = parent_node.get_child_index(local_id);
             parent_node = &self.nodes[parent_node_index];
 
             // Advance the key offset
@@ -568,6 +557,15 @@ impl Node {
             node_base,
             leaf_base,
         }
+    }
+
+    /// Returns the index of the child node pointed by `local_id`.
+    #[inline(always)]
+    fn get_child_index(&self, local_id: StrideId) -> usize {
+        let node_base = self.node_base;
+        let node_offset = self.node_bitmap.bitmap_index(local_id);
+
+        (node_base + node_offset) as usize
     }
 }
 
