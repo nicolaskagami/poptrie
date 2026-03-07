@@ -75,6 +75,25 @@ impl Key for u128 {
     }
 }
 
+pub trait Prefix: Copy + Into<(Self::ADDRESS, u8)> {
+    type ADDRESS: Key;
+    fn address(&self) -> Self::ADDRESS;
+    fn prefix_length(&self) -> u8;
+}
+impl<K: Key> Prefix for (K, u8) {
+    type ADDRESS = K;
+
+    #[inline(always)]
+    fn address(&self) -> Self::ADDRESS {
+        self.0
+    }
+
+    #[inline(always)]
+    fn prefix_length(&self) -> u8 {
+        self.1
+    }
+}
+
 /// Extract `len` bits from `key`, starting from `offset` bits from the most
 /// significant bit. Bit position is exact (msb aligned) and zero-padded to the right.
 /// - `len` must be at most 8 since where returning a `u8`.

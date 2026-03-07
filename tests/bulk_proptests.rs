@@ -14,8 +14,8 @@ proptest! {
             .collect();
 
         let mut manually_inserted = Poptrie::new();
-        for ((key, len), value) in entries.iter().cloned() {
-            manually_inserted.insert(key, len, value);
+        for (prefix, value) in entries.iter().cloned() {
+            manually_inserted.insert(prefix, value);
         }
 
         let bulk_inserted: Poptrie<_,_> = entries.iter().cloned().collect();
