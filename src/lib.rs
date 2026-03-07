@@ -80,8 +80,8 @@ where
     /// The values associated with the prefixes.
     values: Vec<V>,
 
-    /// References for leaves, only used when editing the trie.
-    reference: Vec<BTreeMap<PrefixId, ValueIndex>>,
+    /// The entries associated with each node.
+    entries: Vec<BTreeMap<PrefixId, ValueIndex>>,
 
     /// The marker for `K`.
     _marker: PhantomData<fn(K)>,
@@ -112,7 +112,7 @@ where
         Poptrie::<K, V> {
             values: Vec::new(),
             nodes: vec![root_node], // Start with a root node
-            reference: vec![BTreeMap::new()], // Root's reference
+            entries: vec![BTreeMap::new()], // Root's entries
             leaves: vec![ValueIndex::NONE], // Global default value index
             _marker: PhantomData,
         }
@@ -187,8 +187,8 @@ where
                     self.nodes[i].node_base += 1;
                 }
 
-                // Also insert into reference
-                self.reference.insert(full_node_index, BTreeMap::new());
+                // Also insert into entries
+                self.entries.insert(full_node_index, BTreeMap::new());
 
                 // Insert the default leaf, always at the base, representing the full range
                 self.leaves
@@ -215,8 +215,7 @@ where
         let prefix_id = PrefixId::from_key(key, key_offset, remaining_length);
 
         // Store the value index for that prefix chunk
-        self.reference[parent_node_index]
-            .insert(prefix_id, current_value_index);
+        self.entries[parent_node_index].insert(prefix_id, current_value_index);
 
         // Update the defaults for children
         self.calculate_leaf_ranges(parent_node_index, default_value_index);
@@ -307,7 +306,7 @@ where
         let (parent_node, prefix_id, _) =
             self.find_parent_node(key, key_length);
 
-        self.reference[parent_node].contains_key(&prefix_id)
+        self.entries[parent_node].contains_key(&prefix_id)
     }
 
     /// Removes and returns the value associated with the exact prefix
@@ -336,22 +335,22 @@ where
         let (parent_node, prefix_id, default_value_index) =
             self.find_parent_node(key, key_length);
 
-        self.reference[parent_node].remove(&prefix_id).map(|v| {
+        self.entries[parent_node].remove(&prefix_id).map(|v| {
             // Update the leaf ranges
             self.calculate_leaf_ranges(parent_node, default_value_index);
 
-            // Update the value indices in all the leaves and references
+            // Update the value indices in all the leaves and entries
             for higher_v in self
                 .leaves
                 .iter_mut()
-                .chain(self.reference.iter_mut().flat_map(|s| s.values_mut()))
+                .chain(self.entries.iter_mut().flat_map(|s| s.values_mut()))
                 .filter(|higher_v| **higher_v > v)
             {
                 higher_v.decrement();
             }
 
             // SAFETY: The value is guaranteed to exist because it was just removed from the
-            // reference map.
+            // entry map.
             self.values.remove(v.get().unwrap())
         })
     }
@@ -362,7 +361,7 @@ where
         key: K,
         key_length: u8,
     ) -> (usize, PrefixId, ValueIndex) {
-        // Traverse the trie similarly to a insert but check the reference
+        // Traverse the trie similarly to a insert but check the entry
         let mut key_offset = 0;
         let mut parent_node_index = 0;
         let mut parent_node = &self.nodes[parent_node_index];
@@ -432,7 +431,7 @@ where
             .collect();
 
         let (new_bitmap, new_leaves) =
-            build_leaf_ranges(&self.reference[node_index], default_value_index);
+            build_leaf_ranges(&self.entries[node_index], default_value_index);
 
         let old_end = if node_index < self.nodes.len() - 1 {
             self.nodes[node_index + 1].leaf_base as usize
@@ -487,8 +486,8 @@ where
         let leaf_base = self.nodes[node_index].leaf_base as usize;
         let leaf_bitmap = &mut self.nodes[node_index].leaf_bitmap;
 
-        let mut references = self.reference[node_index].iter().peekable();
-        let default = references
+        let mut entries = self.entries[node_index].iter().peekable();
+        let default = entries
             .peek()
             .take_if(|(p, _)| p.prefix_length() == 0)
             .map(|(_, v)| **v)
@@ -497,7 +496,7 @@ where
         self.leaves.insert(leaf_base, default);
         leaf_bitmap.set(StrideId(0));
 
-        for (prefix_id, value) in references {
+        for (prefix_id, value) in entries {
             let (prefix, len) = prefix_id.components();
             let leaf_id = prefix_id.stride_id();
             let leafvec_index = leaf_bitmap.leafvec_index(leaf_id);
@@ -569,7 +568,7 @@ impl Node {
     }
 }
 
-// Idea: try to iterate over reference, adding in increasing order of prefix id
+// Idea: try to iterate over entries, adding in increasing order of prefix id
 // if prefix id 0 doesn't exist it will use default
 // For each prefix in tree:
 // - Remember the value currently assigned (with leaf id)
@@ -591,14 +590,14 @@ impl Node {
 // - For `Poptrie::insert`, multiple leaves may have to added, where each insert pushes the following leaves
 // - We could not always shrink, trading a little cache locality for insertion speed.
 fn build_leaf_ranges(
-    reference: &BTreeMap<PrefixId, ValueIndex>,
+    entries: &BTreeMap<PrefixId, ValueIndex>,
     default_value_index: ValueIndex,
 ) -> (Bitmap<StrideId>, Vec<ValueIndex>) {
     let mut leaf_bitmap = Bitmap::new();
 
     // Prepare default
-    let mut references = reference.iter().peekable();
-    let default = references
+    let mut entries = entries.iter().peekable();
+    let default = entries
         .peek()
         .take_if(|(p, _)| p.prefix_length() == 0)
         .map(|(_, v)| **v)
@@ -607,7 +606,7 @@ fn build_leaf_ranges(
     let mut leaves = vec![default];
     leaf_bitmap.set(StrideId(0));
 
-    for (prefix_id, value) in references {
+    for (prefix_id, value) in entries {
         let (prefix, len) = prefix_id.components();
         let leaf_id = prefix_id.stride_id();
         let leafvec_index = leaf_bitmap.leafvec_index(leaf_id) as usize;

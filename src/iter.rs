@@ -25,7 +25,7 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
         items.sort_by(|(a_path, ..), (b_path, ..)| a_path.cmp(b_path));
 
         // We go breadth-first, level by level:
-        // - Insert the would-be leaves into reference.
+        // - Insert the would-be leaves into entries.
         // - Insert the new internal nodes for that level, along with their defaults.
         // - Fix the parent's bitmaps with the information above.
         let mut defaults = vec![ValueIndex::NONE];
@@ -36,7 +36,7 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
         let mut nodes_to_process = 0..1;
 
         while !items.is_empty() {
-            // Remove all leaves for this level and add them to reference
+            // Remove all leaves for this level and add them to entries
             for (path, mut parent_node_index, len, key, value) in
                 items.extract_if(.., |(path, ..)| path.len() <= level)
             {
@@ -54,7 +54,7 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
                 let remaining_length = len - key_offset;
                 let prefix_id =
                     PrefixId::from_key(key, key_offset, remaining_length);
-                poptrie.reference[parent_node_index]
+                poptrie.entries[parent_node_index]
                     .insert(prefix_id, current_value_index);
             }
 
@@ -83,7 +83,7 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
                 {
                     poptrie.nodes.push(Node::default());
                     poptrie.nodes[*parent_node_index].node_bitmap.set(local_id);
-                    poptrie.reference.push(BTreeMap::new());
+                    poptrie.entries.push(BTreeMap::new());
 
                     // The parent must be ready to provide a default
                     defaults.push(
