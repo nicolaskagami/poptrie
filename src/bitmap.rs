@@ -4,7 +4,7 @@ use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 
 use crate::{
     STRIDE,
-    key::{Key, extract_bits, extract_bits_saturated},
+    prefix::{Key, extract_bits, extract_bits_saturated},
 };
 
 /// A generic bitmap for storing u8 encoded ids of 0..63

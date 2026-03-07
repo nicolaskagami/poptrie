@@ -1,18 +1,20 @@
 use crate::{
-    Key, Node, Poptrie, STRIDE,
+    Node, Poptrie, Prefix, STRIDE,
     bitmap::{PrefixId, StrideId},
     value_index::ValueIndex,
 };
 use alloc::vec;
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 
-impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
-    fn from_iter<I: IntoIterator<Item = ((K, u8), V)>>(iter: I) -> Self {
+impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
+    fn from_iter<I: IntoIterator<Item = (P, V)>>(iter: I) -> Self {
         let mut poptrie = Self::new();
 
         let mut items: Vec<_> = iter
             .into_iter()
-            .map(|((key, len), value)| {
+            .map(|(prefix, value)| {
+                let key = prefix.address();
+                let len = prefix.prefix_length();
                 let path: Vec<_> = (0..(len / STRIDE))
                     .map(|i| StrideId::from_key(key, i * STRIDE, STRIDE))
                     .collect();

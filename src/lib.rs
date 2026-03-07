@@ -21,10 +21,11 @@ extern crate alloc;
 
 mod bitmap;
 mod iter;
-mod key;
+mod prefix;
 mod value_index;
 
-pub use key::Key;
+pub use prefix::Key;
+use prefix::Prefix;
 
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
@@ -53,12 +54,12 @@ const STRIDE: u8 = 6;
 /// use poptrie::Poptrie;
 ///
 /// // Create a routing table for IPv4 addresses
-/// let mut trie = Poptrie::<u32, &str>::new();
+/// let mut trie = Poptrie::<(u32, u8), &str>::new();
 ///
 /// // Insert prefixes with their associated values
-/// trie.insert(u32::from_be_bytes([192, 168, 0, 0]), 16, "192.168.0.0/16");
-/// trie.insert(u32::from_be_bytes([192, 168, 1, 0]), 24, "192.168.1.0/24");
-/// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "10.0.0.0/8");
+/// trie.insert((u32::from_be_bytes([192, 168, 0, 0]), 16), "192.168.0.0/16");
+/// trie.insert((u32::from_be_bytes([192, 168, 1, 0]), 24), "192.168.1.0/24");
+/// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), "10.0.0.0/8");
 ///
 /// // Perform longest prefix match lookups
 /// assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 1, 5])), Some(&"192.168.1.0/24"));
@@ -67,9 +68,9 @@ const STRIDE: u8 = 6;
 /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), None);
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct Poptrie<K, V>
+pub struct Poptrie<P, V>
 where
-    K: Key,
+    P: Prefix,
 {
     /// The internal nodes of the trie.
     nodes: Vec<Node>,
@@ -84,12 +85,12 @@ where
     entries: Vec<BTreeMap<PrefixId, ValueIndex>>,
 
     /// The marker for `K`.
-    _marker: PhantomData<fn(K)>,
+    _marker: PhantomData<fn(P)>,
 }
 
-impl<K, V> Poptrie<K, V>
+impl<P, V> Poptrie<P, V>
 where
-    K: Key,
+    P: Prefix,
 {
     /// Construct a new, empty poptrie.
     ///
@@ -98,7 +99,7 @@ where
     /// ```
     /// use poptrie::Poptrie;
     ///
-    /// let trie = Poptrie::<u32, ()>::new();
+    /// let trie = Poptrie::<(u32,u8), ()>::new();
     /// ```
     pub fn new() -> Self {
         let mut root_node = Node::new(
@@ -109,7 +110,7 @@ where
         );
         // Register the default value bit
         root_node.leaf_bitmap.set(StrideId(0));
-        Poptrie::<K, V> {
+        Poptrie::<P, V> {
             values: Vec::new(),
             nodes: vec![root_node], // Start with a root node
             entries: vec![BTreeMap::new()], // Root's entries
@@ -132,16 +133,17 @@ where
     /// let mut trie = Poptrie::new();
     ///
     /// // Insert a /8 prefix
-    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "10.0.0.0/8");
+    /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), "10.0.0.0/8");
     ///
     /// // Insert a more specific /24 prefix
-    /// trie.insert(u32::from_be_bytes([10, 1, 2, 0]), 24, "10.1.2.0/24");
+    /// trie.insert((u32::from_be_bytes([10, 1, 2, 0]), 24), "10.1.2.0/24");
     ///
     /// // Insert a default route (0-length prefix matches everything)
-    /// trie.insert(0u32, 0, "default");
+    /// trie.insert((0u32, 0), "default");
     /// ```
-    pub fn insert(&mut self, key: K, key_length: u8, value: V) {
-        assert!(key_length <= K::BITS);
+    pub fn insert(&mut self, prefix: P, value: V) {
+        let (key, key_length) = (prefix.address(), prefix.prefix_length());
+        assert!(key_length <= P::ADDRESS::BITS);
         // Store the value in the values vector and get its index
         self.values.push(value);
         let current_value_index =
@@ -235,9 +237,9 @@ where
     /// // No match without a default route
     /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), None);
     ///
-    /// trie.insert(0u32, 0, "default");
-    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "10/8");
-    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, "10.1/16");
+    /// trie.insert((0u32, 0), "default");
+    /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), "10/8");
+    /// trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), "10.1/16");
     ///
     /// // Longest prefix match: 10.1.2.3 matches 10.1/16
     /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some(&"10.1/16"));
@@ -248,32 +250,9 @@ where
     /// // Falls back to default
     /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), Some(&"default"));
     /// ```
-    pub fn lookup(&self, key: K) -> Option<&V> {
-        let mut key_offset = 0;
-        // First node is root
-        let mut parent_node_index = 0;
-        let mut parent_node = &self.nodes[parent_node_index];
-
-        let mut local_id = StrideId::from_key(key, key_offset, STRIDE);
-
-        // Should always try internal nodes first.
-        while parent_node.node_bitmap.contains(local_id) {
-            // If there's a valid internal node, traverse it
-            parent_node_index = parent_node.get_child_index(local_id);
-            parent_node = &self.nodes[parent_node_index];
-
-            // Update key offset and local ID
-            key_offset += STRIDE;
-            local_id = StrideId::from_key(key, key_offset, STRIDE);
-        }
-
-        // There will always be at least a 0th leaf (e.g. with the default)
-        let leaf_index = parent_node.leaf_bitmap.leafvec_index(local_id);
-
-        let leaf_base = parent_node.leaf_base;
-        let value_index = self.leaves[(leaf_base + leaf_index) as usize];
-
-        value_index.get().map(|i| &self.values[i])
+    #[inline(always)]
+    pub fn lookup(&self, key: P::ADDRESS) -> Option<&V> {
+        lookup_inner(&self.nodes, &self.leaves, &self.values, key)
     }
 
     /// Returns `true` if the trie contains an entry for the exact prefix
@@ -288,23 +267,22 @@ where
     /// ```
     /// use poptrie::Poptrie;
     ///
-    /// let mut trie = Poptrie::new();
-    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
+    /// let mut trie = Poptrie::<(u32, u8),_>::new();
+    /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32);
     ///
     /// // Exact prefix is present
-    /// assert!(trie.contains_key(u32::from_be_bytes([10, 0, 0, 0]), 8));
+    /// assert!(trie.contains_key((u32::from_be_bytes([10, 0, 0, 0]), 8)));
     ///
     /// // Different length — not present, even though lookup would succeed
-    /// assert!(!trie.contains_key(u32::from_be_bytes([10, 0, 0, 0]), 7));
-    /// assert!(!trie.contains_key(u32::from_be_bytes([10, 0, 0, 0]), 9));
+    /// assert!(!trie.contains_key((u32::from_be_bytes([10, 0, 0, 0]), 7)));
+    /// assert!(!trie.contains_key((u32::from_be_bytes([10, 0, 0, 0]), 9)));
     ///
     /// // Completely absent prefix
-    /// assert!(!trie.contains_key(u32::from_be_bytes([192, 168, 0, 0]), 16));
+    /// assert!(!trie.contains_key((u32::from_be_bytes([192, 168, 0, 0]), 16)));
     /// ```
-    pub fn contains_key(&self, key: K, key_length: u8) -> bool {
+    pub fn contains_key(&self, prefix: P) -> bool {
         // Find the final parent node and prefix id
-        let (parent_node, prefix_id, _) =
-            self.find_parent_node(key, key_length);
+        let (parent_node, prefix_id, _) = self.find_parent_node(prefix);
 
         self.entries[parent_node].contains_key(&prefix_id)
     }
@@ -318,22 +296,22 @@ where
     /// use poptrie::Poptrie;
     ///
     /// let mut trie = Poptrie::new();
-    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
-    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
+    /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32);
+    /// trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), 16u32);
     ///
     /// // Remove the /16 prefix
-    /// assert_eq!(trie.remove(u32::from_be_bytes([10, 1, 0, 0]), 16), Some(16));
+    /// assert_eq!(trie.remove((u32::from_be_bytes([10, 1, 0, 0]), 16)), Some(16));
     ///
     /// // Addresses previously matched by /16 now fall back to /8
     /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some(&8));
     ///
     /// // Removing a prefix that doesn't exist returns None
-    /// assert!(!trie.contains_key(u32::from_be_bytes([10, 1, 0, 0]), 16));
+    /// assert!(!trie.contains_key((u32::from_be_bytes([10, 1, 0, 0]), 16)));
     /// ```
-    pub fn remove(&mut self, key: K, key_length: u8) -> Option<V> {
+    pub fn remove(&mut self, prefix: P) -> Option<V> {
         // Find the final parent node and prefix id
         let (parent_node, prefix_id, default_value_index) =
-            self.find_parent_node(key, key_length);
+            self.find_parent_node(prefix);
 
         self.entries[parent_node].remove(&prefix_id).map(|v| {
             // Update the leaf ranges
@@ -356,11 +334,8 @@ where
     }
 
     /// Find the final parent node and the `PrefixId` of the given key.
-    fn find_parent_node(
-        &self,
-        key: K,
-        key_length: u8,
-    ) -> (usize, PrefixId, ValueIndex) {
+    fn find_parent_node(&self, prefix: P) -> (usize, PrefixId, ValueIndex) {
+        let (key, key_length) = (prefix.address(), prefix.prefix_length());
         // Traverse the trie similarly to a insert but check the entry
         let mut key_offset = 0;
         let mut parent_node_index = 0;
@@ -635,4 +610,27 @@ fn build_leaf_ranges(
     }
 
     (leaf_bitmap, leaves)
+}
+
+// Monomorphizing just on `Key` gives us 3% perf on 100k elements
+fn lookup_inner<'v, K: Key, V>(
+    nodes: &[Node],
+    leaves: &[ValueIndex],
+    values: &'v [V],
+    key: K,
+) -> Option<&'v V> {
+    let mut key_offset = 0;
+    let mut parent_node_index = 0;
+    let mut parent_node = &nodes[parent_node_index];
+    let mut local_id = StrideId::from_key(key, key_offset, STRIDE);
+    while parent_node.node_bitmap.contains(local_id) {
+        parent_node_index = parent_node.get_child_index(local_id);
+        parent_node = &nodes[parent_node_index];
+        key_offset += STRIDE;
+        local_id = StrideId::from_key(key, key_offset, STRIDE);
+    }
+    let leaf_index = parent_node.leaf_bitmap.leafvec_index(local_id);
+    let leaf_base = parent_node.leaf_base;
+    let value_index = leaves[(leaf_base + leaf_index) as usize];
+    value_index.get().map(|i| &values[i])
 }
