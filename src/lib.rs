@@ -24,7 +24,7 @@ mod iter;
 mod key;
 mod value_index;
 
-pub use iter::{IntoIter, Iter, IterMut};
+pub use iter::{IntoIter, Iter, IterMut, Keys, Values, ValuesMut};
 pub use key::Key;
 
 use alloc::collections::btree_map::BTreeMap;
@@ -307,6 +307,190 @@ where
             self.find_parent_node(key, key_length);
 
         self.entries[parent_node].contains_key(&prefix_id)
+    }
+
+    /// Returns the number of entries in the trie.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    /// assert_eq!(trie.len(), 0);
+    ///
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
+    /// assert_eq!(trie.len(), 1);
+    /// ```
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Returns `true` if the trie contains no prefixes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::<u32, u32>::new();
+    /// assert!(trie.is_empty());
+    ///
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
+    /// assert!(!trie.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// Returns a reference to the value associated with the exact prefix
+    /// `(key, key_length)`, or `None` if it was not present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
+    ///
+    /// assert_eq!(trie.get(u32::from_be_bytes([10, 0, 0, 0]), 8), Some(&8));
+    /// assert_eq!(trie.get(u32::from_be_bytes([10, 0, 0, 0]), 16), None);
+    /// ```
+    pub fn get(&self, key: K, key_length: u8) -> Option<&V> {
+        let (parent_node, prefix_id, _) =
+            self.find_parent_node(key, key_length);
+
+        self.entries[parent_node]
+            .get(&prefix_id)
+            .and_then(|(_, vi)| vi.get().map(|i| &self.values[i]))
+    }
+
+    /// Returns a mutable reference to the value associated with the exact
+    /// prefix `(key, key_length)`, or `None` if it was not present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 1u32);
+    ///
+    /// if let Some(v) = trie.get_mut(u32::from_be_bytes([10, 0, 0, 0]), 8) {
+    ///     *v *= 10;
+    /// }
+    ///
+    /// assert_eq!(trie.get(u32::from_be_bytes([10, 0, 0, 0]), 8), Some(&10));
+    /// ```
+    pub fn get_mut(&mut self, key: K, key_length: u8) -> Option<&mut V> {
+        let (parent_node, prefix_id, _) =
+            self.find_parent_node(key, key_length);
+
+        self.entries[parent_node]
+            .get(&prefix_id)
+            .and_then(|(_, vi)| vi.get())
+            .map(|i| &mut self.values[i])
+    }
+
+    /// Returns an iterator over the prefixes `(&key, prefix_length)` of the
+    /// trie, in lexicographic order of `(prefix_length, key)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
+    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
+    ///
+    /// let keys: Vec<_> = trie.keys().collect();
+    /// assert_eq!(keys, [
+    ///     (&u32::from_be_bytes([10, 0, 0, 0]), 8),
+    ///     (&u32::from_be_bytes([10, 1, 0, 0]), 16),
+    /// ]);
+    /// ```
+    pub fn keys(&self) -> Keys<'_, K, V> {
+        Keys(self.iter())
+    }
+
+    /// Returns an iterator over the values of the trie, in lexicographic
+    /// order of `(prefix_length, key)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
+    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
+    ///
+    /// let values: Vec<_> = trie.values().collect();
+    /// assert_eq!(values, [&8, &16]);
+    /// ```
+    pub fn values(&self) -> Values<'_, K, V> {
+        Values(self.iter())
+    }
+
+    /// Returns a mutable iterator over the values of the trie, in lexicographic
+    /// order of `(prefix_length, key)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 1u32);
+    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 2u32);
+    ///
+    /// for v in trie.values_mut() {
+    ///     *v *= 10;
+    /// }
+    ///
+    /// assert_eq!(trie.get(u32::from_be_bytes([10, 0, 0, 0]), 8), Some(&10));
+    /// assert_eq!(trie.get(u32::from_be_bytes([10, 1, 0, 0]), 16), Some(&20));
+    /// ```
+    pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
+        ValuesMut(self.iter_mut())
+    }
+
+    /// Retains only the entries for which the predicate returns `true`,
+    /// removing all others.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
+    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
+    /// trie.insert(u32::from_be_bytes([10, 1, 2, 0]), 24, 24u32);
+    ///
+    /// trie.retain(|_, v| *v <= 16);
+    ///
+    /// assert_eq!(trie.len(), 2);
+    /// assert!(trie.contains_key(u32::from_be_bytes([10, 0, 0, 0]), 8));
+    /// assert!(trie.contains_key(u32::from_be_bytes([10, 1, 0, 0]), 16));
+    /// assert!(!trie.contains_key(u32::from_be_bytes([10, 1, 2, 0]), 24));
+    /// ```
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        let to_remove: Vec<_> = self
+            .iter_mut()
+            .filter_map(
+                |((k, l), v)| if !f(k, v) { Some((*k, l)) } else { None },
+            )
+            .collect();
+
+        for (key, len) in to_remove {
+            self.remove(key, len);
+        }
     }
 
     /// Removes and returns the value associated with the exact prefix

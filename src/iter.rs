@@ -299,6 +299,57 @@ impl<K: Key, V> Poptrie<K, V> {
     }
 }
 
+/// An iterator over the keys of a [`Poptrie`], in lexicographic order of
+/// `(prefix_length, key)`.
+///
+/// This `struct` is created by the [`keys`] method on [`Poptrie`].
+/// See its documentation for more.
+///
+/// [`keys`]: Poptrie::keys
+pub struct Keys<'a, K: Key, V>(pub(crate) Iter<'a, K, V>);
+
+impl<'a, K: Key, V> Iterator for Keys<'a, K, V> {
+    type Item = (&'a K, u8);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|((k, l), _)| (k, l))
+    }
+}
+
+/// An iterator over the values of a [`Poptrie`], in lexicographic order of
+/// `(prefix_length, key)`.
+///
+/// This `struct` is created by the [`values`] method on [`Poptrie`].
+/// See its documentation for more.
+///
+/// [`values`]: Poptrie::values
+pub struct Values<'a, K: Key, V>(pub(crate) Iter<'a, K, V>);
+
+impl<'a, K: Key, V> Iterator for Values<'a, K, V> {
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|(_, v)| v)
+    }
+}
+
+/// A mutable iterator over the values of a [`Poptrie`], in lexicographic
+/// order of `(prefix_length, key)`.
+///
+/// This `struct` is created by the [`values_mut`] method on [`Poptrie`].
+/// See its documentation for more.
+///
+/// [`values_mut`]: Poptrie::values_mut
+pub struct ValuesMut<'a, K: Key, V>(pub(crate) IterMut<'a, K, V>);
+
+impl<'a, K: Key, V> Iterator for ValuesMut<'a, K, V> {
+    type Item = &'a mut V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|(_, v)| v)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
