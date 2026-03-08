@@ -24,6 +24,7 @@ mod iter;
 mod key;
 mod value_index;
 
+pub use iter::{IntoIter, Iter, IterMut};
 pub use key::Key;
 
 use alloc::collections::btree_map::BTreeMap;
@@ -31,7 +32,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bitmap::*;
 use core::cmp::min;
-use core::marker::PhantomData;
 use value_index::ValueIndex;
 
 /// The maximum number of bits we can consume from the prefix at a time.
@@ -39,6 +39,10 @@ use value_index::ValueIndex;
 /// This is 6 because the 2^6 = 64, which is the biggest size for which a native popcount
 /// instruction exists.
 const STRIDE: u8 = 6;
+
+/// A tuple representing a prefix entry in the trie, consisting of a key, prefix length,
+/// and value index.
+type Entry<K> = ((K, u8), ValueIndex);
 
 /// A compressed prefix tree optimized for fast longest prefix match (LPM) lookups.
 ///
@@ -81,10 +85,7 @@ where
     values: Vec<V>,
 
     /// The entries associated with each node.
-    entries: Vec<BTreeMap<PrefixId, ValueIndex>>,
-
-    /// The marker for `K`.
-    _marker: PhantomData<fn(K)>,
+    entries: Vec<BTreeMap<PrefixId, Entry<K>>>,
 }
 
 impl<K, V> Poptrie<K, V>
@@ -114,7 +115,6 @@ where
             nodes: vec![root_node], // Start with a root node
             entries: vec![BTreeMap::new()], // Root's entries
             leaves: vec![ValueIndex::NONE], // Global default value index
-            _marker: PhantomData,
         }
     }
 
@@ -214,8 +214,9 @@ where
         let remaining_length = key_length - key_offset;
         let prefix_id = PrefixId::from_key(key, key_offset, remaining_length);
 
-        // Store the value index for that prefix chunk
-        self.entries[parent_node_index].insert(prefix_id, current_value_index);
+        // Store the key and value index for that prefix chunk
+        self.entries[parent_node_index]
+            .insert(prefix_id, ((key, key_length), current_value_index));
 
         // Update the defaults for children
         self.calculate_leaf_ranges(parent_node_index, default_value_index);
@@ -302,7 +303,6 @@ where
     /// assert!(!trie.contains_key(u32::from_be_bytes([192, 168, 0, 0]), 16));
     /// ```
     pub fn contains_key(&self, key: K, key_length: u8) -> bool {
-        // Find the final parent node and prefix id
         let (parent_node, prefix_id, _) =
             self.find_parent_node(key, key_length);
 
@@ -331,11 +331,10 @@ where
     /// assert!(!trie.contains_key(u32::from_be_bytes([10, 1, 0, 0]), 16));
     /// ```
     pub fn remove(&mut self, key: K, key_length: u8) -> Option<V> {
-        // Find the final parent node and prefix id
         let (parent_node, prefix_id, default_value_index) =
             self.find_parent_node(key, key_length);
 
-        self.entries[parent_node].remove(&prefix_id).map(|v| {
+        self.entries[parent_node].remove(&prefix_id).map(|(_, v)| {
             // Update the leaf ranges
             self.calculate_leaf_ranges(parent_node, default_value_index);
 
@@ -343,7 +342,11 @@ where
             for higher_v in self
                 .leaves
                 .iter_mut()
-                .chain(self.entries.iter_mut().flat_map(|s| s.values_mut()))
+                .chain(
+                    self.entries
+                        .iter_mut()
+                        .flat_map(|s| s.values_mut().map(|(_, vi)| vi)),
+                )
                 .filter(|higher_v| **higher_v > v)
             {
                 higher_v.decrement();
@@ -361,7 +364,6 @@ where
         key: K,
         key_length: u8,
     ) -> (usize, PrefixId, ValueIndex) {
-        // Traverse the trie similarly to a insert but check the entry
         let mut key_offset = 0;
         let mut parent_node_index = 0;
         let mut parent_node = &self.nodes[parent_node_index];
@@ -371,17 +373,13 @@ where
             let local_id = StrideId::from_key(key, key_offset, STRIDE);
             default_value_index = self.get_default(parent_node_index, local_id);
 
-            // Check if there's already a node with `local_id`
             if !parent_node.node_bitmap.contains(local_id) {
-                // If there's no node with `local_id`, break out
                 break;
             }
 
-            // Traverse to the child node
             parent_node_index = parent_node.get_child_index(local_id);
             parent_node = &self.nodes[parent_node_index];
 
-            // Advance the key offset
             key_offset += STRIDE;
         }
 
@@ -392,9 +390,6 @@ where
     }
 
     /// Find the next base node and leaf node index for a given parent node index.
-    ///
-    /// Used for inserting a new node while keeping the order of nodes.
-    /// It will get the latest descendant node that's before the new node.
     fn find_next_base(&self, next_node_index: usize) -> (u32, u32) {
         // SAFETY: We start with a root node at 0
         let last_node = &self.nodes[next_node_index - 1];
@@ -430,8 +425,10 @@ where
             .map(|p| self.get_default(node_index, StrideId(*p)))
             .collect();
 
-        let (new_bitmap, new_leaves) =
-            build_leaf_ranges(&self.entries[node_index], default_value_index);
+        let (new_bitmap, new_leaves) = build_leaf_ranges(
+            self.entries[node_index].iter().map(|(&pid, &(_, vi))| (pid, vi)),
+            default_value_index,
+        );
 
         let old_end = if node_index < self.nodes.len() - 1 {
             self.nodes[node_index + 1].leaf_base as usize
@@ -490,13 +487,13 @@ where
         let default = entries
             .peek()
             .take_if(|(p, _)| p.prefix_length() == 0)
-            .map(|(_, v)| **v)
+            .map(|(_, (_, v))| *v)
             .unwrap_or(default_value_index);
 
         self.leaves.insert(leaf_base, default);
         leaf_bitmap.set(StrideId(0));
 
-        for (prefix_id, value) in entries {
+        for (prefix_id, (_, value)) in entries {
             let (prefix, len) = prefix_id.components();
             let leaf_id = prefix_id.stride_id();
             let leafvec_index = leaf_bitmap.leafvec_index(leaf_id);
@@ -590,17 +587,16 @@ impl Node {
 // - For `Poptrie::insert`, multiple leaves may have to added, where each insert pushes the following leaves
 // - We could not always shrink, trading a little cache locality for insertion speed.
 fn build_leaf_ranges(
-    entries: &BTreeMap<PrefixId, ValueIndex>,
+    entries: impl Iterator<Item = (PrefixId, ValueIndex)>,
     default_value_index: ValueIndex,
 ) -> (Bitmap<StrideId>, Vec<ValueIndex>) {
     let mut leaf_bitmap = Bitmap::new();
 
-    // Prepare default
-    let mut entries = entries.iter().peekable();
+    let mut entries = entries.peekable();
     let default = entries
         .peek()
         .take_if(|(p, _)| p.prefix_length() == 0)
-        .map(|(_, v)| **v)
+        .map(|(_, v)| *v)
         .unwrap_or(default_value_index);
 
     let mut leaves = vec![default];
@@ -612,21 +608,16 @@ fn build_leaf_ranges(
         let leafvec_index = leaf_bitmap.leafvec_index(leaf_id) as usize;
         let initial_value = leaves[leafvec_index];
 
-        // Insert new leaf or rewrite a possible terminator
         let leaf_bitmap_index = leaf_bitmap.bitmap_index(leaf_id) as usize;
         if !leaf_bitmap.contains(leaf_id) {
-            leaves.insert(leaf_bitmap_index, *value);
+            leaves.insert(leaf_bitmap_index, value);
             leaf_bitmap.set(leaf_id);
         } else {
-            leaves[leaf_bitmap_index] = *value;
+            leaves[leaf_bitmap_index] = value;
         }
 
         let next_id = StrideId((prefix + 1) << (STRIDE - len));
 
-        // Check if we need to insert a terminator
-        // We don't insert if:
-        // - It's the end of representation
-        // - It already exists, meaning something more relevant is already there
         if next_id.0 != (1 << STRIDE) && !leaf_bitmap.contains(next_id) {
             let next_bitmap_index = leaf_bitmap.bitmap_index(next_id) as usize;
             leaves.insert(next_bitmap_index, initial_value);
