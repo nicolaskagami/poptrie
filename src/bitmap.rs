@@ -1,5 +1,3 @@
-use core::marker::PhantomData;
-
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 
 use crate::{
@@ -8,73 +6,51 @@ use crate::{
 };
 
 /// A generic bitmap for storing u8 encoded ids of 0..63
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct Bitmap<T>
-where
-    T: Copy + Into<u8>,
-{
-    bits: u64,
-    _phantom: PhantomData<T>,
-}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Bitmap(u64);
 
-impl<T> Default for Bitmap<T>
-where
-    T: Copy + Into<u8>,
-{
-    fn default() -> Self {
-        Bitmap { bits: 0u64, _phantom: PhantomData }
-    }
-}
-
-impl<T> Bitmap<T>
-where
-    T: Copy + Into<u8>,
-{
+impl Bitmap {
     /// Creates a new unpopulated `LeafBitmap`.
     #[inline(always)]
     pub(crate) fn new() -> Self {
-        Bitmap { bits: 0u64, _phantom: PhantomData }
+        Bitmap(0u64)
     }
 
     /// Returns the internal index of the given leaf ID.
     #[inline(always)] // Particularly effective to inline
-    pub(crate) fn bitmap_index(&self, id: T) -> u32 {
-        if id.into() == 0 {
-            0
-        } else {
-            (self.bits << (64u8 - id.into())).count_ones()
-        }
+    pub(crate) fn bitmap_index(&self, id: StrideId) -> u32 {
+        if id.0 == 0 { 0 } else { (self.0 << (64u8 - id.0)).count_ones() }
     }
 
     /// Returns the index of the entry attributed to the given leaf id using leafvec optimization.
     /// Will be the same as `bitmap_index` when the id is not set.
     /// Apparently it's slightly slower than `bitmap_index`.
     #[inline(always)] // Particularly effective to inline
-    pub(crate) fn leafvec_index(&self, id: T) -> u32 {
-        (self.bits << (63u8 - id.into())).count_ones() - 1
+    pub(crate) fn leafvec_index(&self, id: StrideId) -> u32 {
+        (self.0 << (63u8 - id.0)).count_ones() - 1
     }
 
     /// Returns true if the bitmap contains the given ID.
     #[inline(always)]
-    pub(crate) fn contains(&self, id: T) -> bool {
-        self.bits & (1 << id.into()) != 0
+    pub(crate) fn contains(&self, id: StrideId) -> bool {
+        self.0 & (1 << id.0) != 0
     }
 
     /// Sets the given ID in the bitmap.
     #[inline(always)]
-    pub(crate) fn set(&mut self, id: T) {
-        self.bits |= 1 << id.into();
+    pub(crate) fn set(&mut self, id: StrideId) {
+        self.0 |= 1 << id.0;
     }
 
     /// Returns the number of entries in the bitmap.
     #[inline(always)]
     pub(crate) fn pop_count(&self) -> u32 {
-        self.bits.count_ones()
+        self.0.count_ones()
     }
 
     /// Returns a vec with the sorted positions of the populated bits.
     pub fn bit_positions(&self) -> Vec<u8> {
-        let mut bitmap = self.bits;
+        let mut bitmap = self.0;
         let mut positions = Vec::with_capacity(bitmap.count_ones() as usize);
         while bitmap != 0 {
             positions.push(bitmap.trailing_zeros() as u8);
@@ -182,24 +158,24 @@ mod tests {
 
     #[test]
     fn bitmap_index_test() {
-        let mut bitmap = Bitmap::<u8>::new();
-        assert_eq!(bitmap.bitmap_index(0), 0);
-        assert_eq!(bitmap.bitmap_index(63), 0);
+        let mut bitmap = Bitmap::new();
+        assert_eq!(bitmap.bitmap_index(StrideId(0)), 0);
+        assert_eq!(bitmap.bitmap_index(StrideId(63)), 0);
 
-        bitmap.set(1);
-        assert_eq!(bitmap.bitmap_index(1), 0);
-        assert_eq!(bitmap.bitmap_index(2), 1);
-        assert_eq!(bitmap.bitmap_index(63), 1);
+        bitmap.set(StrideId(1));
+        assert_eq!(bitmap.bitmap_index(StrideId(1)), 0);
+        assert_eq!(bitmap.bitmap_index(StrideId(2)), 1);
+        assert_eq!(bitmap.bitmap_index(StrideId(63)), 1);
 
-        let mut thirty_two = Bitmap::<u8>::new();
-        thirty_two.set(5);
-        assert_eq!(thirty_two.bitmap_index(5), 0);
-        assert_eq!(thirty_two.bitmap_index(6), 1);
-        assert_eq!(thirty_two.bitmap_index(63), 1);
+        let mut thirty_two = Bitmap::new();
+        thirty_two.set(StrideId(5));
+        assert_eq!(thirty_two.bitmap_index(StrideId(5)), 0);
+        assert_eq!(thirty_two.bitmap_index(StrideId(6)), 1);
+        assert_eq!(thirty_two.bitmap_index(StrideId(63)), 1);
 
-        let mut full = Bitmap::<u8>::new();
-        full.bits = u64::MAX;
-        assert_eq!(full.bitmap_index(63), 63);
+        let mut full = Bitmap::new();
+        full.0 = u64::MAX;
+        assert_eq!(full.bitmap_index(StrideId(63)), 63);
     }
 
     #[test]

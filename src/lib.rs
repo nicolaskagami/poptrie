@@ -730,10 +730,10 @@ struct Node {
     debug_prefix: Vec<StrideId>,
 
     /// Bitmap of local nodes
-    node_bitmap: Bitmap<StrideId>,
+    node_bitmap: Bitmap,
 
     /// Bitmap of local prefixes
-    leaf_bitmap: Bitmap<StrideId>,
+    leaf_bitmap: Bitmap,
 
     /// Offset of the first node pointed by this node
     node_base: u32,
@@ -792,7 +792,7 @@ impl Node {
 fn build_leaf_ranges(
     entries: impl Iterator<Item = (PrefixId, ValueIndex)>,
     default_value_index: ValueIndex,
-) -> (Bitmap<StrideId>, Vec<ValueIndex>) {
+) -> (Bitmap, Vec<ValueIndex>) {
     let mut leaf_bitmap = Bitmap::new();
 
     let mut entries = entries.peekable();
