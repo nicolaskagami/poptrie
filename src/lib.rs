@@ -118,7 +118,8 @@ where
         }
     }
 
-    /// Insert a value into the trie associated with the given prefix.
+    /// Insert a value into the trie associated with the given prefix,
+    /// returning the previous value if one existed.
     ///
     /// # Panics
     ///
@@ -132,20 +133,24 @@ where
     /// let mut trie = Poptrie::new();
     ///
     /// // Insert a /8 prefix
-    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "10.0.0.0/8");
+    /// assert_eq!(trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "10.0.0.0/8"), None);
     ///
     /// // Insert a more specific /24 prefix
-    /// trie.insert(u32::from_be_bytes([10, 1, 2, 0]), 24, "10.1.2.0/24");
+    /// assert_eq!(trie.insert(u32::from_be_bytes([10, 1, 2, 0]), 24, "10.1.2.0/24"), None);
+    ///
+    /// // Replacing an existing prefix returns the old value
+    /// assert_eq!(trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "new"), Some("10.0.0.0/8"));
     ///
     /// // Insert a default route (0-length prefix matches everything)
-    /// trie.insert(0u32, 0, "default");
+    /// assert_eq!(trie.insert(0u32, 0, "default"), None);
     /// ```
-    pub fn insert(&mut self, key: K, key_length: u8, value: V) {
+    pub fn insert(
+        &mut self,
+        key: K,
+        key_length: u8,
+        mut value: V,
+    ) -> Option<V> {
         assert!(key_length <= K::BITS);
-        // Store the value in the values vector and get its index
-        self.values.push(value);
-        let current_value_index =
-            ValueIndex::new((self.values.len() - 1) as u32);
 
         let mut default_value_index = ValueIndex::NONE;
         let mut key_offset = 0;
@@ -214,12 +219,26 @@ where
         let remaining_length = key_length - key_offset;
         let prefix_id = PrefixId::from_key(key, key_offset, remaining_length);
 
-        // Store the key and value index for that prefix chunk
-        self.entries[parent_node_index]
-            .insert(prefix_id, ((key, key_length), current_value_index));
+        // If an entry already exists, reuse it and return the old value
+        let old_value = if let Some(idx) = self.entries[parent_node_index]
+            .get(&prefix_id)
+            .and_then(|(_, v)| v.get())
+        {
+            core::mem::swap(&mut value, &mut self.values[idx]);
+            Some(value)
+        } else {
+            self.values.push(value);
+            let current_value_index =
+                ValueIndex::new((self.values.len() - 1) as u32);
+            self.entries[parent_node_index]
+                .insert(prefix_id, ((key, key_length), current_value_index));
+            None
+        };
 
         // Update the defaults for children
         self.calculate_leaf_ranges(parent_node_index, default_value_index);
+
+        old_value
     }
 
     /// Lookup a key in the trie, performing longest-prefix match.
