@@ -211,7 +211,7 @@ impl<'a, K: Key, V> Iterator for Iter<'a, K, V> {
 }
 
 impl<K: Key, V> Poptrie<K, V> {
-    /// Iterates over all `((key, prefix_length), &value)` tuples, in
+    /// Iterates over all `((&key, prefix_length), &value)` tuples, in
     /// lexicographic order of `(prefix_length, key)`.
     ///
     /// # Examples
@@ -268,7 +268,7 @@ impl<'a, K: Key, V> Iterator for IterMut<'a, K, V> {
 }
 
 impl<K: Key, V> Poptrie<K, V> {
-    /// Iterates mutably over all `((key, prefix_length), &mut value)` tuples,
+    /// Iterates mutably over all `((&key, prefix_length), &mut value)` tuples,
     /// in lexicographic order of `(prefix_length, key)`.
     ///
     /// # Examples

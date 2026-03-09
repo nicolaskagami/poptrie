@@ -793,6 +793,8 @@ fn build_leaf_ranges(
         let initial_value = leaves[leafvec_index];
 
         let leaf_bitmap_index = leaf_bitmap.bitmap_index(leaf_id) as usize;
+
+        // Insert new leaf or rewrite a possible terminator
         if !leaf_bitmap.contains(leaf_id) {
             leaves.insert(leaf_bitmap_index, value);
             leaf_bitmap.set(leaf_id);
@@ -802,6 +804,10 @@ fn build_leaf_ranges(
 
         let next_id = StrideId((prefix + 1) << (STRIDE - len));
 
+        // Check if we need to insert a terminator
+        // We don't insert if:
+        // - It's the end of representation
+        // - It already exists, meaning something more relevant is already there
         if next_id.0 != (1 << STRIDE) && !leaf_bitmap.contains(next_id) {
             let next_bitmap_index = leaf_bitmap.bitmap_index(next_id) as usize;
             leaves.insert(next_bitmap_index, initial_value);
