@@ -266,8 +266,33 @@ where
     /// // Falls back to default
     /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), Some(&"default"));
     /// ```
-    pub fn lookup(&self, key: P::ADDRESS) -> Option<&V> {
-        lookup_inner(&self.nodes, &self.leaves, key).map(|i| &self.values[i])
+    pub fn lookup(&self, address: P::ADDRESS) -> Option<&V> {
+        // lookup_inner(&self.nodes, &self.leaves, key).map(|i| &self.values[i])
+        let mut offset = 0;
+        // First node is root
+        let mut parent_node_index = 0;
+        let mut parent_node = &self.nodes[parent_node_index];
+
+        let mut local_id = StrideId::from_address(address, offset, STRIDE);
+
+        // Should always try internal nodes first.
+        while parent_node.node_bitmap.contains(local_id) {
+            // If there's a valid internal node, traverse it
+            parent_node_index = parent_node.get_child_index(local_id);
+            parent_node = &self.nodes[parent_node_index];
+
+            // Update key offset and local ID
+            offset += STRIDE;
+            local_id = StrideId::from_address(address, offset, STRIDE);
+        }
+
+        // There will always be at least a 0th leaf (e.g. with the default)
+        let leaf_index = parent_node.leaf_bitmap.leafvec_index(local_id);
+
+        let leaf_base = parent_node.leaf_base;
+        let value_index = self.leaves[(leaf_base + leaf_index) as usize];
+
+        value_index.get().map(|i| &self.values[i])
     }
 
     /// Returns `true` if the trie contains an entry for the exact prefix.
@@ -781,37 +806,4 @@ fn build_leaf_ranges(
     }
 
     (leaf_bitmap, leaves)
-}
-
-/// Monomorphized to just `K` has a decent performance impact.
-fn lookup_inner<A: Address>(
-    nodes: &[Node],
-    leaves: &[ValueIndex],
-    address: A,
-) -> Option<usize> {
-    let mut offset = 0;
-    // First node is root
-    let mut parent_node_index = 0;
-    let mut parent_node = &nodes[parent_node_index];
-
-    let mut local_id = StrideId::from_address(address, offset, STRIDE);
-
-    // Should always try internal nodes first.
-    while parent_node.node_bitmap.contains(local_id) {
-        // If there's a valid internal node, traverse it
-        parent_node_index = parent_node.get_child_index(local_id);
-        parent_node = &nodes[parent_node_index];
-
-        // Update key offset and local ID
-        offset += STRIDE;
-        local_id = StrideId::from_address(address, offset, STRIDE);
-    }
-
-    // There will always be at least a 0th leaf (e.g. with the default)
-    let leaf_index = parent_node.leaf_bitmap.leafvec_index(local_id);
-
-    let leaf_base = parent_node.leaf_base;
-    let value_index = leaves[(leaf_base + leaf_index) as usize];
-
-    value_index.get()
 }
