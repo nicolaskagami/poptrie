@@ -58,10 +58,10 @@ assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 1, 5])), Some(&"192.168.0.0
 | Function | Description |
 |---|---|
 | `new()` | Construct a new, empty poptrie |
-| `insert(key, key_length, value)` | Insert a value associated with the given prefix |
-| `lookup(key)` | Longest-prefix match lookup, returns `Option<&V>` |
-| `contains_key(key, key_length)` | Returns `true` if the exact prefix is present |
-| `remove(key, key_length)` | Remove a prefix and return its value |
+| `insert(prefix, value)` | Insert a value associated with the given prefix |
+| `lookup(address)` | Longest-prefix match lookup, returns `Option<&V>` |
+| `contains_key(prefix)` | Returns `true` if the exact prefix is present |
+| `remove(prefix)` | Remove a prefix and return its value |
 
 ### Lookup performance
 

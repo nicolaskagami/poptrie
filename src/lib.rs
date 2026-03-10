@@ -19,14 +19,14 @@
 #![no_std]
 extern crate alloc;
 
+mod address;
 mod bitmap;
 mod iter;
-mod key;
 mod prefix;
 mod value_index;
 
+pub use address::Address;
 pub use iter::{IntoIter, Iter, IterMut, Keys, Values, ValuesMut};
-pub use key::Key;
 pub use prefix::Prefix;
 
 use alloc::collections::btree_map::BTreeMap;
@@ -146,12 +146,12 @@ where
     /// ```
     pub fn insert(&mut self, prefix: P, mut value: V) -> Option<V> {
         let key = prefix.address();
-        let key_length = prefix.prefix_length();
+        let prefix_length = prefix.prefix_length();
 
-        assert!(key_length <= P::ADDRESS::BITS);
+        assert!(prefix_length <= P::ADDRESS::BITS);
 
         let mut default_value_index = ValueIndex::NONE;
-        let mut key_offset = 0;
+        let mut offset = 0;
 
         // First node is root
         let mut parent_node_index = 0;
@@ -159,8 +159,8 @@ where
 
         // Check if it's in the correct depth
         // We MUST use '>=' here to ensure that full strides always direct towards inner nodes.
-        while key_length >= key_offset + STRIDE {
-            let local_id = StrideId::from_key(key, key_offset, STRIDE);
+        while prefix_length >= offset + STRIDE {
+            let local_id = StrideId::from_address(key, offset, STRIDE);
             let full_node_index = parent_node.get_child_index(local_id);
 
             // Find the default from the parent
@@ -210,12 +210,12 @@ where
             parent_node_index = full_node_index;
             parent_node = &self.nodes[parent_node_index];
 
-            key_offset += STRIDE;
+            offset += STRIDE;
         }
 
         // Can't consume a whole STRIDE, so we handle the remainder.
-        let remaining_length = key_length - key_offset;
-        let prefix_id = PrefixId::from_key(key, key_offset, remaining_length);
+        let remaining_length = prefix_length - offset;
+        let prefix_id = PrefixId::from_address(key, offset, remaining_length);
 
         // If an entry already exists, reuse it and return the old value
         let old_value = if let Some(idx) = self.entries[parent_node_index]
@@ -513,15 +513,15 @@ where
 
     /// Find the final parent node and the `PrefixId` of the given key.
     fn find_parent_node(&self, prefix: P) -> (usize, PrefixId, ValueIndex) {
-        let key = prefix.address();
-        let key_length = prefix.prefix_length();
-        let mut key_offset = 0;
+        let address = prefix.address();
+        let prefix_length = prefix.prefix_length();
+        let mut offset = 0;
         let mut parent_node_index = 0;
         let mut parent_node = &self.nodes[parent_node_index];
         let mut default_value_index = ValueIndex::NONE;
 
-        while key_length >= key_offset + STRIDE {
-            let local_id = StrideId::from_key(key, key_offset, STRIDE);
+        while prefix_length >= offset + STRIDE {
+            let local_id = StrideId::from_address(address, offset, STRIDE);
             default_value_index = self.get_default(parent_node_index, local_id);
 
             if !parent_node.node_bitmap.contains(local_id) {
@@ -531,11 +531,12 @@ where
             parent_node_index = parent_node.get_child_index(local_id);
             parent_node = &self.nodes[parent_node_index];
 
-            key_offset += STRIDE;
+            offset += STRIDE;
         }
 
-        let remaining_length = min(key_length - key_offset, STRIDE - 1);
-        let prefix_id = PrefixId::from_key(key, key_offset, remaining_length);
+        let remaining_length = min(prefix_length - offset, STRIDE - 1);
+        let prefix_id =
+            PrefixId::from_address(address, offset, remaining_length);
 
         (parent_node_index, prefix_id, default_value_index)
     }
@@ -783,17 +784,17 @@ fn build_leaf_ranges(
 }
 
 /// Monomorphized to just `K` has a decent performance impact.
-fn lookup_inner<K: Key>(
+fn lookup_inner<A: Address>(
     nodes: &[Node],
     leaves: &[ValueIndex],
-    key: K,
+    address: A,
 ) -> Option<usize> {
-    let mut key_offset = 0;
+    let mut offset = 0;
     // First node is root
     let mut parent_node_index = 0;
     let mut parent_node = &nodes[parent_node_index];
 
-    let mut local_id = StrideId::from_key(key, key_offset, STRIDE);
+    let mut local_id = StrideId::from_address(address, offset, STRIDE);
 
     // Should always try internal nodes first.
     while parent_node.node_bitmap.contains(local_id) {
@@ -802,8 +803,8 @@ fn lookup_inner<K: Key>(
         parent_node = &nodes[parent_node_index];
 
         // Update key offset and local ID
-        key_offset += STRIDE;
-        local_id = StrideId::from_key(key, key_offset, STRIDE);
+        offset += STRIDE;
+        local_id = StrideId::from_address(address, offset, STRIDE);
     }
 
     // There will always be at least a 0th leaf (e.g. with the default)

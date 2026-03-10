@@ -1,4 +1,4 @@
-use crate::key::Key;
+use crate::address::Address;
 
 /// A prefix is a pattern to match the beginning of a sequence, in this case called an
 /// `ADDRESS`. The prefix is represented by an `ADDRESS` and a `prefix_length` that
@@ -16,7 +16,7 @@ use crate::key::Key;
 ///
 /// Implementing `Prefix` for a custom type:
 /// ```
-/// use poptrie::{Key, Prefix};
+/// use poptrie::{Prefix};
 ///
 /// #[derive(Clone, Copy, PartialEq, Eq)]
 /// struct Ipv4Net { addr: u32, len: u8 }
@@ -29,7 +29,7 @@ use crate::key::Key;
 /// ```
 pub trait Prefix: Copy {
     /// The underlying address type.
-    type ADDRESS: Key;
+    type ADDRESS: Address;
 
     /// Returns the address part of the prefix.
     fn address(&self) -> Self::ADDRESS;
@@ -38,8 +38,8 @@ pub trait Prefix: Copy {
     fn prefix_length(&self) -> u8;
 }
 
-impl<K: Key> Prefix for (K, u8) {
-    type ADDRESS = K;
+impl<A: Address> Prefix for (A, u8) {
+    type ADDRESS = A;
 
     #[inline(always)]
     fn address(&self) -> Self::ADDRESS {

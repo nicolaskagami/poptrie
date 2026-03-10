@@ -28,13 +28,15 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
         let mut items: Vec<_> = iter
             .into_iter()
             .map(|(prefix, value)| {
-                let key = prefix.address();
+                let address = prefix.address();
                 let len = prefix.prefix_length();
                 let path: Vec<_> = (0..(len / STRIDE))
-                    .map(|i| StrideId::from_key(key, i * STRIDE, STRIDE))
+                    .map(|i| {
+                        StrideId::from_address(address, i * STRIDE, STRIDE)
+                    })
                     .collect();
                 // Let's add the path and the last parent
-                (path, 0usize, prefix, key, len, value)
+                (path, 0usize, prefix, address, len, value)
             })
             .collect();
 
@@ -54,7 +56,7 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
 
         while !items.is_empty() {
             // Remove all leaves for this level and add them to entries
-            for (path, mut parent_node_index, prefix, key, len, value) in
+            for (path, mut parent_node_index, prefix, address, len, value) in
                 items.extract_if(.., |(path, ..)| path.len() <= level)
             {
                 poptrie.values.push(value);
@@ -67,10 +69,10 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
                         .get_child_index(local_id);
                 }
 
-                let key_offset = path.len() as u8 * STRIDE;
-                let remaining_length = len - key_offset;
+                let offset = path.len() as u8 * STRIDE;
+                let remaining_length = len - offset;
                 let prefix_id =
-                    PrefixId::from_key(key, key_offset, remaining_length);
+                    PrefixId::from_address(address, offset, remaining_length);
                 poptrie.entries[parent_node_index]
                     .insert(prefix_id, (prefix, current_value_index));
             }

@@ -1,13 +1,18 @@
 #![allow(clippy::unusual_byte_groupings)] // Grouped 6 by 6 because that's the current STRIDE
 use core::ops::{Shl, Shr};
 
-/// A trait for types that can be used as keys in the [poptrie](crate::Poptrie).
+/// A trait for types that can be used as addresses in the `Prefix`.
 ///
-/// This is currently not sealed to allow for custom `Key` types.
+/// This is currently not sealed to allow for custom types.
 /// Future versions may change this, which would be a breaking change.
 ///
 /// - Needs to inform its bit width and a `to_u8` method that returns its 8 least significant bits.
 /// - Needs to implement `rotate_right` method that rotates the key by `n` bits to the right.
+///
+/// # Implementation Details
+///
+/// The current bounds are required to guarantee performance, else there would be a more flexible
+/// trait with their own bit extraction functions. This may change in the future.
 ///
 /// # Examples
 ///
@@ -38,7 +43,7 @@ use core::ops::{Shl, Shr};
 /// assert_eq!(MyAddr::BITS, 32);
 /// assert_eq!(MyAddr(0xdeadbeef).to_u8(), 0xef);
 /// ```
-pub trait Key:
+pub trait Address:
     Copy + Shl<u8, Output = Self> + Shr<u8, Output = Self> + Sized
 {
     /// The number of bits in the key.
@@ -49,7 +54,7 @@ pub trait Key:
     fn rotate_right(self, n: u32) -> Self;
 }
 
-impl Key for u32 {
+impl Address for u32 {
     const BITS: u8 = 32;
     #[inline(always)]
     fn to_u8(self) -> u8 {
@@ -62,7 +67,7 @@ impl Key for u32 {
     }
 }
 
-impl Key for u128 {
+impl Address for u128 {
     const BITS: u8 = 128;
     #[inline(always)]
     fn to_u8(self) -> u8 {
@@ -84,7 +89,7 @@ impl Key for u128 {
 ///                           ^^^^^^^^^^^^^^
 ///                           extracted bits
 ///```
-/// If `len` + `offset` > K::BITS, the extraction will be zero-padded from the right:
+/// If `len` + `offset` > A::BITS, the extraction will be zero-padded from the right:
 ///``` text
 /// MSB |------------------------key-------------------------| LSB
 ///     |---------------- offset -----------------|----- len ----|
@@ -92,11 +97,11 @@ impl Key for u128 {
 ///                                                extracted bits
 ///```
 #[inline(always)]
-pub(crate) fn extract_bits<K>(key: K, offset: u8, len: u8) -> u8
+pub(crate) fn extract_bits<A>(address: A, offset: u8, len: u8) -> u8
 where
-    K: Key,
+    A: Address,
 {
-    (key.rotate_right((K::BITS - offset).wrapping_sub(len) as u32)).to_u8()
+    (address.rotate_right((A::BITS - offset).wrapping_sub(len) as u32)).to_u8()
         & ((1u16 << len) - 1) as u8
 }
 
@@ -110,7 +115,7 @@ where
 ///                           ^^^^^^^^^^^^^^
 ///                           extracted bits
 ///```
-/// If `len` + `offset` > `K::BITS`, the extraction will be saturated:
+/// If `len` + `offset` > `A::BITS`, the extraction will be saturated:
 ///
 /// ``` text
 /// MSB |------------------------key-------------------------| LSB
@@ -119,16 +124,16 @@ where
 ///                                            extracted bits
 ///```
 #[inline(always)]
-pub(crate) fn extract_bits_saturated<K>(key: K, offset: u8, len: u8) -> u8
+pub(crate) fn extract_bits_saturated<A>(address: A, offset: u8, len: u8) -> u8
 where
-    K: Key,
+    A: Address,
 {
     // TODO: Check if mask version is faster
-    let remaining = u8::saturating_sub(K::BITS - offset, len);
-    if remaining + offset == K::BITS {
+    let remaining = u8::saturating_sub(A::BITS - offset, len);
+    if remaining + offset == A::BITS {
         return 0;
     }
-    (key << offset >> (remaining + offset)).to_u8()
+    (address << offset >> (remaining + offset)).to_u8()
 }
 
 #[cfg(test)]

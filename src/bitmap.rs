@@ -2,7 +2,7 @@ use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 
 use crate::{
     STRIDE,
-    key::{Key, extract_bits, extract_bits_saturated},
+    address::{Address, extract_bits, extract_bits_saturated},
 };
 
 /// A generic bitmap for storing u8 encoded ids of 0..63
@@ -79,8 +79,12 @@ impl PrefixId {
         PrefixId((1u8 << len) - 1 + prefix)
     }
 
-    pub(crate) fn from_key<K: Key>(key: K, key_offset: u8, stride: u8) -> Self {
-        let prefix = extract_bits_saturated(key, key_offset, stride);
+    pub(crate) fn from_address<A: Address>(
+        address: A,
+        offset: u8,
+        stride: u8,
+    ) -> Self {
+        let prefix = extract_bits_saturated(address, offset, stride);
         PrefixId::new(prefix, stride)
     }
 
@@ -137,12 +141,12 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct StrideId(pub(crate) u8);
 impl StrideId {
-    pub(crate) fn from_key<K: Key>(
-        key: K,
-        key_offset: u8,
+    pub(crate) fn from_address<A: Address>(
+        address: A,
+        offset: u8,
         length: u8,
     ) -> StrideId {
-        StrideId(extract_bits(key, key_offset, length))
+        StrideId(extract_bits(address, offset, length))
     }
 }
 
@@ -209,11 +213,11 @@ mod tests {
 
     #[test]
     fn test_prefix_to_stride() {
-        for key in 0u32..256 {
+        for address in 0u32..256 {
             for stride in 0u8..STRIDE {
                 // PrefixIds are never full strides
-                let prefix = PrefixId::from_key(key, 0, stride);
-                let stride = StrideId::from_key(key, 0, stride);
+                let prefix = PrefixId::from_address(address, 0, stride);
+                let stride = StrideId::from_address(address, 0, stride);
                 assert_eq!(prefix.stride_id(), stride);
             }
         }
