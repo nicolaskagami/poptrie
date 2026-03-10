@@ -49,7 +49,7 @@ proptest! {
 
         // Insert all prefixes into both implementations
         for (prefix, value) in &prefixes {
-            poptrie.insert(prefix.addr.to_bits(),prefix.prefix_len, *value);
+            poptrie.insert((prefix.addr.to_bits(), prefix.prefix_len), *value);
             reference.insert(prefix.addr, prefix.prefix_len, *value);
         }
 
@@ -57,14 +57,14 @@ proptest! {
         let delete_prefixes = prefixes.iter().take(prefixes.len() / 10);
         for (prefix, _) in delete_prefixes {
             // Assert that the poptrie contains the prefix before deletion
-            prop_assert!(poptrie.contains_key(prefix.addr.to_bits(), prefix.prefix_len));
+            prop_assert!(poptrie.contains_key((prefix.addr.to_bits(), prefix.prefix_len)));
 
             // Delete
-            poptrie.remove(prefix.addr.to_bits(), prefix.prefix_len);
+            poptrie.remove((prefix.addr.to_bits(), prefix.prefix_len));
             reference.remove(prefix.addr, prefix.prefix_len);
 
             // Assert that the poptrie no longer contains the prefix after deletion
-            prop_assert!(!poptrie.contains_key(prefix.addr.to_bits(), prefix.prefix_len));
+            prop_assert!(!poptrie.contains_key((prefix.addr.to_bits(), prefix.prefix_len)));
         }
 
         // Compare lookups

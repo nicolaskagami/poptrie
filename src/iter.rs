@@ -1,20 +1,20 @@
 use crate::{
-    Entry, Key, Node, Poptrie, STRIDE,
+    Entry, Node, Poptrie, Prefix, STRIDE,
     bitmap::{PrefixId, StrideId},
     value_index::ValueIndex,
 };
 use alloc::{collections::btree_map, vec};
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 
-impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
-    /// Creates a [`Poptrie`] from an iterator of `((key, prefix_length), value)` tuples.
+impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
+    /// Creates a [`Poptrie`] from an iterator of `(prefix, value)` tuples.
     ///
     /// # Examples
     ///
     /// ```
     /// use poptrie::Poptrie;
     ///
-    /// let trie: Poptrie<u32, u32> = [
+    /// let trie: Poptrie<(u32, u8), u32> = [
     ///     ((u32::from_be_bytes([10, 0, 0, 0]), 8), 8),
     ///     ((u32::from_be_bytes([10, 1, 0, 0]), 16), 16),
     /// ].into_iter().collect();
@@ -22,17 +22,21 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
     /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 1, 1])), Some(&16));
     /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 2, 1, 1])), Some(&8));
     /// ```
-    fn from_iter<I: IntoIterator<Item = ((K, u8), V)>>(iter: I) -> Self {
+    fn from_iter<I: IntoIterator<Item = (P, V)>>(iter: I) -> Self {
         let mut poptrie = Self::new();
 
         let mut items: Vec<_> = iter
             .into_iter()
-            .map(|((key, len), value)| {
+            .map(|(prefix, value)| {
+                let address = prefix.address();
+                let len = prefix.prefix_length();
                 let path: Vec<_> = (0..(len / STRIDE))
-                    .map(|i| StrideId::from_key(key, i * STRIDE, STRIDE))
+                    .map(|i| {
+                        StrideId::from_address(address, i * STRIDE, STRIDE)
+                    })
                     .collect();
                 // Let's add the path and the last parent
-                (path, 0, len, key, value)
+                (path, 0usize, prefix, address, len, value)
             })
             .collect();
 
@@ -52,7 +56,7 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
 
         while !items.is_empty() {
             // Remove all leaves for this level and add them to entries
-            for (path, mut parent_node_index, len, key, value) in
+            for (path, mut parent_node_index, prefix, address, len, value) in
                 items.extract_if(.., |(path, ..)| path.len() <= level)
             {
                 poptrie.values.push(value);
@@ -65,12 +69,12 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
                         .get_child_index(local_id);
                 }
 
-                let key_offset = path.len() as u8 * STRIDE;
-                let remaining_length = len - key_offset;
+                let offset = path.len() as u8 * STRIDE;
+                let remaining_length = len - offset;
                 let prefix_id =
-                    PrefixId::from_key(key, key_offset, remaining_length);
+                    PrefixId::from_address(address, offset, remaining_length);
                 poptrie.entries[parent_node_index]
-                    .insert(prefix_id, ((key, len), current_value_index));
+                    .insert(prefix_id, (prefix, current_value_index));
             }
 
             // Last step allows us to calculate the leaves
@@ -128,22 +132,22 @@ impl<K: Key, V> FromIterator<((K, u8), V)> for Poptrie<K, V> {
 /// (provided by the [`IntoIterator`] trait). See its documentation for more.
 ///
 /// [`into_iter`]: IntoIterator::into_iter
-pub struct IntoIter<K: Key, V> {
-    entries: vec::IntoIter<BTreeMap<PrefixId, Entry<K>>>,
-    current: btree_map::IntoIter<PrefixId, Entry<K>>,
+pub struct IntoIter<P: Prefix, V> {
+    entries: vec::IntoIter<BTreeMap<PrefixId, Entry<P>>>,
+    current: btree_map::IntoIter<PrefixId, Entry<P>>,
     values: alloc::vec::Vec<Option<V>>,
 }
 
-impl<K: Key, V> Iterator for IntoIter<K, V> {
-    type Item = ((K, u8), V);
+impl<P: Prefix, V> Iterator for IntoIter<P, V> {
+    type Item = (P, V);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            for (_, ((key, key_len), value_index)) in &mut self.current {
+            for (_, (prefix, value_index)) in &mut self.current {
                 if let Some(value) =
                     value_index.get().and_then(|idx| self.values[idx].take())
                 {
-                    return Some(((key, key_len), value));
+                    return Some((prefix, value));
                 }
             }
             self.current = self.entries.next()?.into_iter();
@@ -151,12 +155,12 @@ impl<K: Key, V> Iterator for IntoIter<K, V> {
     }
 }
 
-impl<K: Key, V> IntoIterator for Poptrie<K, V> {
-    type Item = ((K, u8), V);
-    type IntoIter = IntoIter<K, V>;
+impl<P: Prefix, V> IntoIterator for Poptrie<P, V> {
+    type Item = (P, V);
+    type IntoIter = IntoIter<P, V>;
 
-    /// Consumes the trie and iterates over all `((key, prefix_length), value)`
-    /// tuples, in lexicographic order of `(prefix_length, key)`.
+    /// Consumes the trie and iterates over all `(prefix, value)` tuples, in
+    /// lexicographic order of `(prefix_length, key)`.
     ///
     /// # Examples
     ///
@@ -164,8 +168,8 @@ impl<K: Key, V> IntoIterator for Poptrie<K, V> {
     /// use poptrie::Poptrie;
     ///
     /// let mut trie = Poptrie::new();
-    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "10/8");
-    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, "10.1/16");
+    /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), "10/8");
+    /// trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), "10.1/16");
     ///
     /// let entries: Vec<_> = trie.into_iter().collect();
     /// assert_eq!(entries, [
@@ -189,20 +193,20 @@ impl<K: Key, V> IntoIterator for Poptrie<K, V> {
 /// See its documentation for more.
 ///
 /// [`iter`]: Poptrie::iter
-pub struct Iter<'a, K: Key, V> {
-    entries: core::slice::Iter<'a, BTreeMap<PrefixId, Entry<K>>>,
-    current: btree_map::Iter<'a, PrefixId, Entry<K>>,
+pub struct Iter<'a, P: Prefix, V> {
+    entries: core::slice::Iter<'a, BTreeMap<PrefixId, Entry<P>>>,
+    current: btree_map::Iter<'a, PrefixId, Entry<P>>,
     values: &'a [V],
 }
 
-impl<'a, K: Key, V> Iterator for Iter<'a, K, V> {
-    type Item = ((&'a K, u8), &'a V);
+impl<'a, P: Prefix, V> Iterator for Iter<'a, P, V> {
+    type Item = (&'a P, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            for (_, ((key, key_len), value_index)) in &mut self.current {
+            for (_, (prefix, value_index)) in &mut self.current {
                 if let Some(idx) = value_index.get() {
-                    return Some(((key, *key_len), &self.values[idx]));
+                    return Some((prefix, &self.values[idx]));
                 }
             }
             self.current = self.entries.next()?.iter();
@@ -210,9 +214,9 @@ impl<'a, K: Key, V> Iterator for Iter<'a, K, V> {
     }
 }
 
-impl<K: Key, V> Poptrie<K, V> {
-    /// Iterates over all `((&key, prefix_length), &value)` tuples, in
-    /// lexicographic order of `(prefix_length, key)`.
+impl<P: Prefix, V> Poptrie<P, V> {
+    /// Iterates over all `(&prefix, &value)` pairs, in lexicographic order of
+    /// `(prefix_length, key)`.
     ///
     /// # Examples
     ///
@@ -220,17 +224,16 @@ impl<K: Key, V> Poptrie<K, V> {
     /// use poptrie::Poptrie;
     ///
     /// let mut trie = Poptrie::new();
-    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, "10/8");
-    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, "10.1/16");
+    /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), "10/8");
+    /// trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), "10.1/16");
     ///
-    /// for ((key, len), val) in trie.iter() {
-    ///     assert!(trie.contains_key(*key, len));
+    /// for (prefix, val) in trie.iter() {
+    ///     assert!(trie.contains_key(*prefix));
     /// }
     /// ```
-    pub fn iter(&self) -> Iter<'_, K, V> {
+    pub fn iter(&self) -> Iter<'_, P, V> {
         let mut entries = self.entries.iter();
         let current = entries.next().map(|m| m.iter()).unwrap_or_default();
-
         Iter { entries, current, values: &self.values }
     }
 }
@@ -242,22 +245,22 @@ impl<K: Key, V> Poptrie<K, V> {
 /// See its documentation for more.
 ///
 /// [`iter_mut`]: Poptrie::iter_mut
-pub struct IterMut<'a, K: Key, V> {
-    entries: core::slice::Iter<'a, BTreeMap<PrefixId, Entry<K>>>,
-    current: btree_map::Iter<'a, PrefixId, Entry<K>>,
+pub struct IterMut<'a, P: Prefix, V> {
+    entries: core::slice::Iter<'a, BTreeMap<PrefixId, Entry<P>>>,
+    current: btree_map::Iter<'a, PrefixId, Entry<P>>,
     values: &'a mut [V],
 }
 
-impl<'a, K: Key, V> Iterator for IterMut<'a, K, V> {
-    type Item = ((&'a K, u8), &'a mut V);
+impl<'a, P: Prefix, V> Iterator for IterMut<'a, P, V> {
+    type Item = (&'a P, &'a mut V);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            for (_, ((key, key_len), value_index)) in &mut self.current {
+            for (_, (prefix, value_index)) in &mut self.current {
                 if let Some(idx) = value_index.get() {
                     // SAFETY: Each ValueIndex is unique across all entries so
                     // no two yielded references alias.
-                    return Some(((key, *key_len), unsafe {
+                    return Some((prefix, unsafe {
                         &mut *self.values.as_mut_ptr().add(idx)
                     }));
                 }
@@ -267,9 +270,9 @@ impl<'a, K: Key, V> Iterator for IterMut<'a, K, V> {
     }
 }
 
-impl<K: Key, V> Poptrie<K, V> {
-    /// Iterates mutably over all `((&key, prefix_length), &mut value)` tuples,
-    /// in lexicographic order of `(prefix_length, key)`.
+impl<P: Prefix, V> Poptrie<P, V> {
+    /// Iterates mutably over all `(&prefix, &mut value)` pairs, in lexicographic
+    /// order of `(prefix_length, key)`.
     ///
     /// # Examples
     ///
@@ -277,17 +280,17 @@ impl<K: Key, V> Poptrie<K, V> {
     /// use poptrie::Poptrie;
     ///
     /// let mut trie = Poptrie::new();
-    /// trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 1u32);
-    /// trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 2u32);
+    /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 1u32);
+    /// trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), 2u32);
     ///
-    /// for ((key, len), val) in trie.iter_mut() {
+    /// for (_, val) in trie.iter_mut() {
     ///     *val *= 10;
     /// }
     ///
     /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 0, 1, 1])), Some(&10));
     /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 1, 1])), Some(&20));
     /// ```
-    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, P, V> {
         let Poptrie { entries, values, .. } = self;
         let mut entries_iter = entries.iter();
         let current = entries_iter.next().map(|m| m.iter()).unwrap_or_default();
@@ -306,13 +309,13 @@ impl<K: Key, V> Poptrie<K, V> {
 /// See its documentation for more.
 ///
 /// [`keys`]: Poptrie::keys
-pub struct Keys<'a, K: Key, V>(pub(crate) Iter<'a, K, V>);
+pub struct Keys<'a, P: Prefix, V>(pub(crate) Iter<'a, P, V>);
 
-impl<'a, K: Key, V> Iterator for Keys<'a, K, V> {
-    type Item = (&'a K, u8);
+impl<'a, P: Prefix, V> Iterator for Keys<'a, P, V> {
+    type Item = &'a P;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|((k, l), _)| (k, l))
+        self.0.next().map(|(p, _)| p)
     }
 }
 
@@ -323,9 +326,9 @@ impl<'a, K: Key, V> Iterator for Keys<'a, K, V> {
 /// See its documentation for more.
 ///
 /// [`values`]: Poptrie::values
-pub struct Values<'a, K: Key, V>(pub(crate) Iter<'a, K, V>);
+pub struct Values<'a, P: Prefix, V>(pub(crate) Iter<'a, P, V>);
 
-impl<'a, K: Key, V> Iterator for Values<'a, K, V> {
+impl<'a, P: Prefix, V> Iterator for Values<'a, P, V> {
     type Item = &'a V;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -340,9 +343,9 @@ impl<'a, K: Key, V> Iterator for Values<'a, K, V> {
 /// See its documentation for more.
 ///
 /// [`values_mut`]: Poptrie::values_mut
-pub struct ValuesMut<'a, K: Key, V>(pub(crate) IterMut<'a, K, V>);
+pub struct ValuesMut<'a, P: Prefix, V>(pub(crate) IterMut<'a, P, V>);
 
-impl<'a, K: Key, V> Iterator for ValuesMut<'a, K, V> {
+impl<'a, P: Prefix, V> Iterator for ValuesMut<'a, P, V> {
     type Item = &'a mut V;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -357,30 +360,29 @@ mod tests {
     #[test]
     fn iter_yields_all_entries() {
         let mut trie = Poptrie::new();
-        trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
-        trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
+        trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32);
+        trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), 16u32);
 
-        let entries: Vec<_> =
-            trie.iter().map(|((k, l), v)| (*k, l, *v)).collect();
+        let entries: Vec<_> = trie.iter().map(|(p, v)| (*p, *v)).collect();
         assert_eq!(
             entries,
             [
-                (u32::from_be_bytes([10, 0, 0, 0]), 8, 8),
-                (u32::from_be_bytes([10, 1, 0, 0]), 16, 16),
+                ((u32::from_be_bytes([10, 0, 0, 0]), 8), 8),
+                ((u32::from_be_bytes([10, 1, 0, 0]), 16), 16),
             ]
         );
     }
 
     #[test]
     fn iter_empty_trie() {
-        assert_eq!(Poptrie::<u32, u32>::new().iter().count(), 0);
+        assert_eq!(Poptrie::<(u32, u8), u32>::new().iter().count(), 0);
     }
 
     #[test]
     fn into_iter_consumes_all_entries() {
         let mut trie = Poptrie::new();
-        trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
-        trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
+        trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32);
+        trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), 16u32);
 
         let entries: Vec<_> = trie.into_iter().collect();
         assert_eq!(
@@ -394,14 +396,14 @@ mod tests {
 
     #[test]
     fn into_iter_empty_trie() {
-        assert_eq!(Poptrie::<u32, u32>::new().into_iter().count(), 0);
+        assert_eq!(Poptrie::<(u32, u8), u32>::new().into_iter().count(), 0);
     }
 
     #[test]
     fn iter_mut_modifies_values() {
         let mut trie = Poptrie::new();
-        trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 1u32);
-        trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 2u32);
+        trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 1u32);
+        trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), 2u32);
 
         for (_, v) in trie.iter_mut() {
             *v *= 10;
@@ -414,24 +416,23 @@ mod tests {
     #[test]
     fn iter_after_remove() {
         let mut trie = Poptrie::new();
-        trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
-        trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
-        trie.remove(u32::from_be_bytes([10, 1, 0, 0]), 16);
+        trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32);
+        trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), 16u32);
+        trie.remove((u32::from_be_bytes([10, 1, 0, 0]), 16));
 
         let entries: Vec<_> = trie.iter().collect();
         assert_eq!(entries.len(), 1);
-        assert_eq!(*entries[0].0.0, u32::from_be_bytes([10, 0, 0, 0]));
-        assert_eq!(entries[0].0.1, 8);
+        assert_eq!(*entries[0].0, (u32::from_be_bytes([10, 0, 0, 0]), 8));
     }
 
     #[test]
     fn from_iter_round_trips_with_into_iter() {
         let mut trie = Poptrie::new();
-        trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
-        trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
-        trie.insert(u32::from_be_bytes([10, 1, 2, 0]), 24, 24u32);
+        trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32);
+        trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), 16u32);
+        trie.insert((u32::from_be_bytes([10, 1, 2, 0]), 24), 24u32);
 
-        let rebuilt: Poptrie<u32, u32> = trie.into_iter().collect();
+        let rebuilt: Poptrie<(u32, u8), u32> = trie.into_iter().collect();
 
         let entries: Vec<_> = rebuilt.into_iter().collect();
         assert_eq!(
@@ -447,23 +448,23 @@ mod tests {
     #[test]
     fn iter_contains_key_consistent() {
         let mut trie = Poptrie::new();
-        trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
-        trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
+        trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32);
+        trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), 16u32);
 
-        for ((key, len), _) in trie.iter() {
-            assert!(trie.contains_key(*key, len));
+        for (prefix, _) in trie.iter() {
+            assert!(trie.contains_key(*prefix));
         }
     }
 
     #[test]
     fn iter_is_sorted() {
         let mut trie = Poptrie::new();
-        trie.insert(u32::from_be_bytes([10, 1, 0, 0]), 16, 16u32);
-        trie.insert(u32::from_be_bytes([192, 168, 0, 0]), 16, 160u32);
-        trie.insert(u32::from_be_bytes([10, 0, 0, 0]), 8, 8u32);
-        trie.insert(u32::from_be_bytes([10, 1, 2, 0]), 24, 24u32);
+        trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), 16u32);
+        trie.insert((u32::from_be_bytes([192, 168, 0, 0]), 16), 160u32);
+        trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32);
+        trie.insert((u32::from_be_bytes([10, 1, 2, 0]), 24), 24u32);
 
-        let entries: Vec<_> = trie.iter().map(|((k, l), _)| (*k, l)).collect();
+        let entries: Vec<_> = trie.iter().map(|(p, _)| *p).collect();
         assert_eq!(
             entries,
             [
