@@ -1,3 +1,8 @@
+//! Proptests for insertions
+//!
+//! Property:
+//! - Bulk insertion matches manual insertion
+
 use poptrie::Poptrie;
 use proptest::prelude::*;
 

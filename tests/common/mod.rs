@@ -1,61 +1,79 @@
-use std::collections::HashMap;
-use std::net::Ipv4Addr;
+pub mod reference_model;
 
-/// Reference `HashMap` implementation for LPM
-// TODO: Generify to K
-#[derive(Debug, Default)]
-pub struct HashMapLpm<T> {
-    map: HashMap<(Ipv4Addr, u8), T>,
-}
+pub const STRIDE: u32 = 6;
 
-impl<T> HashMapLpm<T>
-where
-    T: Copy,
-{
-    pub fn new() -> Self {
-        HashMapLpm { map: HashMap::new() }
-    }
+#[macro_export]
+macro_rules! u32_strides {
+    ($first:expr $(, $rest:expr)* $(,)?) => {{
+        const STRIDE: u32 = $crate::common::STRIDE;
 
-    pub fn lookup(&self, address: Ipv4Addr) -> Option<&T> {
-        // Check all prefix lengths starting with the longest.
-        for length in (0..=32).rev() {
-            // Apply the mask to the address
-            let masked_prefix = mask_prefix(address, length);
-            // Return on the first match
-            if let Some(result) = self.map.get(&(masked_prefix, length)) {
-                return Some(result);
-            }
+        #[allow(unused_mut)]
+        {
+            let mut shift: u32 = 32u32 - STRIDE;
+            let mut value: u32 = ($first as u32) << shift;
+
+            $(
+                shift = shift.saturating_sub(STRIDE);
+                value |= ($rest as u32) << shift;
+            )*
+
+            value
         }
-        None
-    }
-
-    pub fn insert(&mut self, prefix: Ipv4Addr, prefix_length: u8, value: T) {
-        let masked_prefix = mask_prefix(prefix, prefix_length);
-        self.map.insert((masked_prefix, prefix_length), value);
-    }
-
-    pub fn remove(&mut self, prefix: Ipv4Addr, prefix_length: u8) {
-        let masked_prefix = mask_prefix(prefix, prefix_length);
-        self.map.remove(&(masked_prefix, prefix_length));
-    }
+    }};
 }
 
-/// Mask the `address` with the given `prefix_length`
-fn mask_prefix(addr: Ipv4Addr, prefix_len: u8) -> Ipv4Addr {
-    debug_assert!(prefix_len <= 32);
-    let mask =
-        if prefix_len == 0 { 0u32 } else { u32::MAX << (32 - prefix_len) };
-    Ipv4Addr::from_bits(addr.to_bits() & mask)
-}
+#[cfg(test)]
+#[allow(clippy::unusual_byte_groupings)] // Grouped 6 by 6 because that's the current STRIDE
+mod tests {
+    #[test]
+    fn u32_macro_simple() {
+        assert_eq!(u32_strides!(1), u32_strides!(1));
+        assert_eq!(u32_strides!(2), 0b000010_000000_000000_000000_000000_00u32);
+        assert_eq!(
+            u32_strides!(63),
+            0b111111_000000_000000_000000_000000_00u32
+        );
+    }
+    #[test]
+    fn u32_macro_steps() {
+        assert_eq!(
+            u32_strides!(1, 2),
+            0b000001_000010_000000_000000_000000_00u32
+        );
+        assert_eq!(
+            u32_strides!(1, 2, 3),
+            0b000001_000010_000011_000000_000000_00u32
+        );
+        assert_eq!(
+            u32_strides!(0, 1, 0),
+            0b000000_000001_000000_000000_000000_00u32
+        );
+        assert_eq!(u32_strides!(1, 0, 0, 0), u32_strides!(1));
+        assert_eq!(
+            u32_strides!(63, 63),
+            0b111111_111111_000000_000000_000000_00u32
+        );
+    }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Ipv4Prefix {
-    pub addr: Ipv4Addr,
-    pub prefix_len: u8,
-}
+    #[test]
+    fn u32_macro_encoding() {
+        assert_eq!(
+            u32_strides!(0b000010, 2),
+            0b000010_000010_000000_000000_000000_00u32
+        );
 
-impl Ipv4Prefix {
-    pub fn new(addr: Ipv4Addr, prefix_len: u8) -> Self {
-        Self { addr: mask_prefix(addr, prefix_len), prefix_len }
+        assert_eq!(
+            u32_strides!(0b100000, 2),
+            0b100000_000010_000000_000000_000000_00u32
+        );
+    }
+
+    #[test]
+    fn u32_macro_full_stride() {
+        assert_eq!(
+            u32_strides!(1, 1, 1, 1, 1, 3),
+            0b000001_000001_000001_000001_000001_11u32
+        );
+        assert_eq!(u32_strides!(0, 0, 0, 0, 0, 3), 0b11u32);
     }
 }

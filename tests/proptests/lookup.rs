@@ -1,10 +1,14 @@
-//! Proptests for Poptrie
-mod common;
-use common::HashMapLpm;
-use common::Ipv4Prefix;
+//! Proptesting lookup
+//!
+//! Property:
+//! - Lookups will match a reference implementation after the same inserts/deletes
+
+use crate::common::reference_model;
 use core::net::Ipv4Addr;
 use poptrie::Poptrie;
 use proptest::prelude::*;
+use reference_model::HashMapLpm;
+use reference_model::Ipv4Prefix;
 use std::collections::HashMap;
 
 /// Generate arbitrary IPv4 addresses
