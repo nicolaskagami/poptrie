@@ -16,9 +16,9 @@ use core::ops::{Shl, Shr};
 ///
 /// # Examples
 ///
-/// Implementing `Key` for a custom newtype:
+/// Implementing `Address` for a custom newtype:
 /// ```
-/// use poptrie::Key;
+/// use poptrie::Address;
 /// use core::ops::{Shl, Shr};
 ///
 /// #[derive(Clone, Copy)]
@@ -34,7 +34,7 @@ use core::ops::{Shl, Shr};
 ///     fn shr(self, n: u8) -> Self { MyAddr(self.0 >> n) }
 /// }
 ///
-/// impl Key for MyAddr {
+/// impl Address for MyAddr {
 ///     const BITS: u8 = 32;
 ///     fn to_u8(self) -> u8 { self.0 as u8 }
 ///     fn rotate_right(self, n: u32) -> Self { MyAddr(self.0.rotate_right(n)) }
@@ -46,11 +46,11 @@ use core::ops::{Shl, Shr};
 pub trait Address:
     Copy + Shl<u8, Output = Self> + Shr<u8, Output = Self> + Sized
 {
-    /// The number of bits in the key.
+    /// The number of bits in the address.
     const BITS: u8;
-    /// Converts the least significant bits of the key to a u8.
+    /// Converts the least significant bits of the address to a u8.
     fn to_u8(self) -> u8;
-    /// Rotates the key to the right by `n` bits.
+    /// Rotates the address to the right by `n` bits.
     fn rotate_right(self, n: u32) -> Self;
 }
 
