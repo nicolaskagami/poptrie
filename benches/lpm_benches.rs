@@ -97,8 +97,7 @@ fn bench_insert(c: &mut Criterion) {
                     let mut poptrie = Poptrie::new();
                     for &((prefix, length), val) in prefixes {
                         poptrie.insert(
-                            black_box(prefix),
-                            black_box(length),
+                            black_box((prefix, length)),
                             black_box(val),
                         );
                     }
