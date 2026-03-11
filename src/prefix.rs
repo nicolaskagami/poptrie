@@ -1,3 +1,5 @@
+use core::net::{Ipv4Addr, Ipv6Addr};
+
 use crate::address::Address;
 
 /// A prefix is a pattern to match the beginning of a sequence, in this case called an
@@ -49,5 +51,93 @@ impl<A: Address> Prefix for (A, u8) {
     #[inline(always)]
     fn prefix_length(&self) -> u8 {
         self.1
+    }
+}
+
+impl Prefix for (Ipv4Addr, u8) {
+    type ADDRESS = u32;
+
+    #[inline(always)]
+    fn address(&self) -> Self::ADDRESS {
+        self.0.to_bits()
+    }
+
+    #[inline(always)]
+    fn prefix_length(&self) -> u8 {
+        self.1
+    }
+}
+
+impl Prefix for (Ipv6Addr, u8) {
+    type ADDRESS = u128;
+
+    #[inline(always)]
+    fn address(&self) -> Self::ADDRESS {
+        self.0.to_bits()
+    }
+
+    #[inline(always)]
+    fn prefix_length(&self) -> u8 {
+        self.1
+    }
+}
+
+#[cfg(feature = "ipnet")]
+impl Prefix for ipnet::Ipv4Net {
+    type ADDRESS = u32;
+
+    #[inline(always)]
+    fn address(&self) -> Self::ADDRESS {
+        u32::from(self.network())
+    }
+
+    #[inline(always)]
+    fn prefix_length(&self) -> u8 {
+        self.prefix_len()
+    }
+}
+
+#[cfg(feature = "ipnet")]
+impl Prefix for ipnet::Ipv6Net {
+    type ADDRESS = u128;
+
+    #[inline(always)]
+    fn address(&self) -> Self::ADDRESS {
+        u128::from(self.network())
+    }
+
+    #[inline(always)]
+    fn prefix_length(&self) -> u8 {
+        self.prefix_len()
+    }
+}
+
+#[cfg(feature = "cidr")]
+impl Prefix for cidr::Ipv4Cidr {
+    type ADDRESS = u32;
+
+    #[inline(always)]
+    fn address(&self) -> Self::ADDRESS {
+        self.first_address().into()
+    }
+
+    #[inline(always)]
+    fn prefix_length(&self) -> u8 {
+        self.network_length()
+    }
+}
+
+#[cfg(feature = "cidr")]
+impl Prefix for cidr::Ipv6Cidr {
+    type ADDRESS = u128;
+
+    #[inline(always)]
+    fn address(&self) -> Self::ADDRESS {
+        self.first_address().into()
+    }
+
+    #[inline(always)]
+    fn prefix_length(&self) -> u8 {
+        self.network_length()
     }
 }
