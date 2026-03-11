@@ -1,55 +1,92 @@
 use core::net::Ipv6Addr;
+use std::str::FromStr;
 
-use poptrie::Poptrie;
+use poptrie::{Poptrie, Prefix};
 
-fn ip6(s: &str) -> u128 {
-    u128::from(s.parse::<Ipv6Addr>().unwrap())
-}
+#[generic_tests::define]
+mod external_prefix_types {
+    use std::{any::TypeId, net::Ipv4Addr};
 
-#[test]
-fn ipv6_basic_lookup() {
-    let mut trie = Poptrie::new();
-    trie.insert((ip6("2001:db8::"), 32), 32u32);
-    assert_eq!(trie.lookup(ip6("2001:db8::1")), Some(&32));
-    assert_eq!(trie.lookup(ip6("2001:db9::1")), None);
-}
+    use poptrie::Address;
 
-#[test]
-fn ipv6_lpm_selects_most_specific() {
-    let mut trie = Poptrie::new();
-    trie.insert((ip6("2001:db8::"), 32), 32u32);
-    trie.insert((ip6("2001:db8:dead::"), 48), 48u32);
+    use super::*;
 
-    assert_eq!(trie.lookup(ip6("2001:db8:dead::1")), Some(&48));
-    assert_eq!(trie.lookup(ip6("2001:db8:beef::1")), Some(&32));
-    assert_eq!(trie.lookup(ip6("2001:db9::")), None);
-}
+    /// We mask because cidr doesn't like non-zero bits after the mask
+    fn base<A: Address + 'static>(len: u8) -> String {
+        if TypeId::of::<A>() == TypeId::of::<u32>() {
+            let mask = if len == 0 { 0u32 } else { u32::MAX << (32 - len) };
+            let ip =
+                Ipv4Addr::from_bits(u32::from_be_bytes([10, 1, 2, 3]) & mask)
+                    .to_string();
+            format!("{ip}/{len}")
+        } else if TypeId::of::<A>() == TypeId::of::<u128>() {
+            let mask = if len == 0 { 0u128 } else { u128::MAX << (128 - len) };
+            let ip = Ipv6Addr::from_bits(
+                u128::from_be(0x2001deadbeef1337cafefeedf00d) & mask,
+            );
+            format!("{ip}/{len}")
+        } else {
+            panic!("failed to match address type")
+        }
+    }
 
-#[test]
-fn ipv6_default_route() {
-    let mut trie = Poptrie::new();
-    trie.insert((ip6("::"), 0), 0u32);
-    trie.insert((ip6("2001:db8::"), 32), 32u32);
+    #[test]
+    fn lookup<P>()
+    where
+        P: Prefix + FromStr,
+        P::ADDRESS: 'static,
+    {
+        let mut trie: Poptrie<P, u32> = Poptrie::new();
+        let prefix = base::<P::ADDRESS>(8).parse::<P>().ok().unwrap();
+        let shorter_prefix = base::<P::ADDRESS>(2).parse::<P>().ok().unwrap();
+        let addr = prefix.address();
 
-    assert_eq!(trie.lookup(ip6("2001:db8::1")), Some(&32));
-    assert_eq!(trie.lookup(ip6("fe80::1")), Some(&0));
-    assert_eq!(trie.lookup(ip6("::1")), Some(&0));
-}
+        // Check the shorter prefix
+        trie.insert(shorter_prefix, 2);
+        assert_eq!(trie.lookup(addr), Some(&2));
 
-#[test]
-fn ipv6_remove_falls_back_to_less_specific() {
-    let mut trie = Poptrie::new();
-    trie.insert((ip6("2001:db8::"), 32), 32u32);
-    trie.insert((ip6("2001:db8:dead::"), 48), 48u32);
-    trie.remove((ip6("2001:db8:dead::"), 48));
+        // Check the longer prefix
+        trie.insert(prefix, 8);
+        assert_eq!(trie.lookup(addr), Some(&8));
 
-    assert_eq!(trie.lookup(ip6("2001:db8:dead::1")), Some(&32));
-}
+        // Check changing the longer prefix
+        assert_eq!(trie.insert(prefix, 10), Some(8));
+        assert_eq!(trie.lookup(addr), Some(&10));
+    }
 
-#[test]
-fn ipv6_host_route() {
-    let mut trie = Poptrie::new();
-    trie.insert((ip6("::1"), 128), 128u32);
-    assert_eq!(trie.lookup(ip6("::1")), Some(&128));
-    assert_eq!(trie.lookup(ip6("::2")), None);
+    #[test]
+    fn remove<P>()
+    where
+        P: Prefix + FromStr,
+        P::ADDRESS: 'static,
+    {
+        let mut trie: Poptrie<P, u32> = Poptrie::new();
+        let prefix_str = base::<P::ADDRESS>(8);
+
+        let prefix = prefix_str.parse::<P>().ok().unwrap();
+        let addr = prefix.address();
+
+        trie.insert(prefix, 10);
+
+        // Check removal
+        assert_eq!(trie.remove(prefix), Some(10));
+        assert_eq!(trie.remove(prefix), None);
+        assert_eq!(trie.lookup(addr), None);
+    }
+
+    #[cfg(feature = "ipnet")]
+    #[instantiate_tests(<ipnet::Ipv4Net>)]
+    mod ipnet_v4 {}
+
+    #[cfg(feature = "ipnet")]
+    #[instantiate_tests(<ipnet::Ipv6Net>)]
+    mod ipnet_v6 {}
+
+    #[cfg(feature = "cidr")]
+    #[instantiate_tests(<cidr::Ipv4Cidr>)]
+    mod cidr_v4 {}
+
+    #[cfg(feature = "cidr")]
+    #[instantiate_tests(<cidr::Ipv6Cidr>)]
+    mod cidr_v6 {}
 }

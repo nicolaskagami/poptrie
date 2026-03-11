@@ -12,12 +12,21 @@ keywords = ["poptrie", "ip", "prefix", "trie"]
 categories = ["network-programming", "data-structures", "no-std"]
 
 [dependencies]
+ipnet = { version = "2", default-features = false, optional = true }
+cidr = { version = "0.3", default-features = false, optional = true }
+
+[features]
+default = []
+ipnet = ["dep:ipnet"]
+cidr = ["dep:cidr"]
+
 
 [dev-dependencies]
 criterion = "0.8.2"
 proptest = "1.10.0"
 rand = "0.10.0"
 rand_chacha = "0.10.0"
+generic-tests = "0.1"
 
 [[bench]]
 name = "lpm_benches"

@@ -266,8 +266,9 @@ where
     /// // Falls back to default
     /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), Some(&"default"));
     /// ```
-    pub fn lookup(&self, address: P::ADDRESS) -> Option<&V> {
-        // lookup_inner(&self.nodes, &self.leaves, key).map(|i| &self.values[i])
+    pub fn lookup<A: Into<P::ADDRESS>>(&self, address: A) -> Option<&V> {
+        let address = address.into();
+
         let mut offset = 0;
         // First node is root
         let mut parent_node_index = 0;

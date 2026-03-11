@@ -1,4 +1,3 @@
-#![allow(clippy::unusual_byte_groupings)] // Grouped 6 by 6 because that's the current STRIDE
 use core::ops::{Shl, Shr};
 
 /// A trait for types that can be used as addresses in the `Prefix`.
@@ -54,31 +53,27 @@ pub trait Address:
     fn rotate_right(self, n: u32) -> Self;
 }
 
-impl Address for u32 {
-    const BITS: u8 = 32;
-    #[inline(always)]
-    fn to_u8(self) -> u8 {
-        self as u8
-    }
+macro_rules! impl_address {
+    ($($t:ty),+) => {
+        $(
+            impl Address for $t {
+                const BITS: u8 = <$t>::BITS as u8;
 
-    #[inline(always)]
-    fn rotate_right(self, n: u32) -> Self {
-        self.rotate_right(n)
-    }
+                #[inline(always)]
+                fn to_u8(self) -> u8 {
+                    self as u8
+                }
+
+                #[inline(always)]
+                fn rotate_right(self, n: u32) -> Self {
+                    <$t>::rotate_right(self, n)
+                }
+            }
+        )+
+    };
 }
 
-impl Address for u128 {
-    const BITS: u8 = 128;
-    #[inline(always)]
-    fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    #[inline(always)]
-    fn rotate_right(self, n: u32) -> Self {
-        self.rotate_right(n)
-    }
-}
+impl_address!(u8, u16, u32, u64, u128);
 
 /// Extract `len` bits from `key`, starting from `offset` bits from the most
 /// significant bit. Bit position is exact (msb aligned) and zero-padded to the right.
@@ -136,6 +131,7 @@ where
     (address << offset >> (remaining + offset)).to_u8()
 }
 
+#[allow(clippy::unusual_byte_groupings)] // Grouped 6 by 6 because that's the current STRIDE
 #[cfg(test)]
 mod tests {
     use super::*;
