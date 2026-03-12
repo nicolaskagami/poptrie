@@ -1,6 +1,5 @@
 //! # poptrie
 //!
-//!
 //! A pure Rust implementation of [Poptrie](https://dl.acm.org/doi/abs/10.1145/2829988.2787474),
 //! a data structure for efficient longest-prefix matching (LPM) lookups.
 //!
@@ -10,11 +9,13 @@
 //! (i.e. 6-bit steps in a 64-bit bitmap), similarly to how a tree-bitmap works, but with a
 //! more contiguous use of memory, trading insertion speed for cache locality.
 //!
-//! This is particularly useful for IP routing tables, where the longest-prefix matching is a
+//! This is particularly useful for IP forwarding tables, where the longest-prefix matching is a
 //! common operation and insertions are comparatively rare.
 //!
 //! # Reference
-//! Asai, Hirochika, and Yasuhiro Ohara. **[Poptrie: A Compressed Trie with Population Count for Fast and Scalable Software IP Routing Table Lookup](https://doi.org/10.1145/2829988.2787474)** ACM SIGCOMM Computer Communication Review 45.4 (2015): 57-70.
+//! Asai, Hirochika, and Yasuhiro Ohara. **[Poptrie: A Compressed Trie with Population Count for
+//! Fast and Scalable Software IP Routing Table Lookup](https://doi.org/10.1145/2829988.2787474)**
+//! ACM SIGCOMM Computer Communication Review 45.4 (2015): 57-70.
 
 #![no_std]
 extern crate alloc;
@@ -56,19 +57,19 @@ type Entry<P> = (P, ValueIndex);
 ///
 /// ```
 /// use poptrie::Poptrie;
+/// use core::net::Ipv4Addr;
 ///
 /// // Create a routing table for IPv4 addresses
-/// let mut trie = Poptrie::<(u32, u8), &str>::new();
-///
-/// trie.insert((u32::from_be_bytes([192, 168, 0, 0]), 16), "192.168.0.0/16");
-/// trie.insert((u32::from_be_bytes([192, 168, 1, 0]), 24), "192.168.1.0/24");
-/// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8),    "10.0.0.0/8");
+/// let mut trie = Poptrie::<_, &str>::new();
+/// trie.insert((Ipv4Addr::from([192, 168, 0, 0]), 16), "16");
+/// trie.insert((Ipv4Addr::from([192, 168, 1, 0]), 24), "24");
+/// trie.insert((Ipv4Addr::from([10, 0, 0, 0]), 8), "8");
 ///
 /// // Perform longest prefix match lookups
-/// assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 1, 5])), Some(&"192.168.1.0/24"));
-/// assert_eq!(trie.lookup(u32::from_be_bytes([192, 168, 2, 5])), Some(&"192.168.0.0/16"));
-/// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some(&"10.0.0.0/8"));
-/// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), None);
+/// assert_eq!(trie.lookup(Ipv4Addr::from([192, 168, 1, 5])),Some(&"24"));
+/// assert_eq!(trie.lookup(Ipv4Addr::from([192, 168, 2, 5])),Some(&"16"));
+/// assert_eq!(trie.lookup(Ipv4Addr::from([10, 1, 2, 3])), Some(&"8"));
+/// assert_eq!(trie.lookup(Ipv4Addr::from([8, 8, 8, 8])), None);
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct Poptrie<P, V>
