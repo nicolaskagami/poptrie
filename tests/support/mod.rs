@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use poptrie::{Poptrie, Prefix};
 
+#[allow(dead_code)] // Required with generic tests
 #[generic_tests::define]
 mod external_prefix_types {
     use std::{any::TypeId, net::Ipv4Addr};
