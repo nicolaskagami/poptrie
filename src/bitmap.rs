@@ -42,10 +42,20 @@ impl Bitmap {
         self.0 |= 1 << id.0;
     }
 
+    /// Clears the bit at `id`.
+    pub(crate) fn clear(&mut self, id: StrideId) {
+        self.0 &= !(1 << id.0);
+    }
+
     /// Returns the number of entries in the bitmap.
     #[inline(always)]
     pub(crate) fn pop_count(&self) -> u32 {
         self.0.count_ones()
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0 == 0
     }
 
     /// Returns a vec with the sorted positions of the populated bits.

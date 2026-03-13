@@ -312,8 +312,12 @@ where
     /// assert!(!trie.contains_key((u32::from_be_bytes([192, 168, 0, 0]), 16)));
     /// ```
     pub fn contains_key(&self, prefix: P) -> bool {
-        let (parent_node, prefix_id, _) = self.find_parent_node(prefix);
-        self.entries[parent_node].contains_key(&prefix_id)
+        self.find_parent_node(prefix).map_or_else(
+            || false,
+            |(parent_node, prefix_id)| {
+                self.entries[parent_node].contains_key(&prefix_id)
+            },
+        )
     }
 
     /// Returns the number of entries in the trie.
@@ -365,7 +369,7 @@ where
     /// assert_eq!(trie.get((u32::from_be_bytes([10, 0, 0, 0]), 16)), None);
     /// ```
     pub fn get(&self, prefix: P) -> Option<&V> {
-        let (parent_node, prefix_id, _) = self.find_parent_node(prefix);
+        let (parent_node, prefix_id) = self.find_parent_node(prefix)?;
         self.entries[parent_node]
             .get(&prefix_id)
             .and_then(|(_, vi)| vi.get().map(|i| &self.values[i]))
@@ -389,7 +393,7 @@ where
     /// assert_eq!(trie.get((u32::from_be_bytes([10, 0, 0, 0]), 8)), Some(&10));
     /// ```
     pub fn get_mut(&mut self, prefix: P) -> Option<&mut V> {
-        let (parent_node, prefix_id, _) = self.find_parent_node(prefix);
+        let (parent_node, prefix_id) = self.find_parent_node(prefix)?;
         self.entries[parent_node]
             .get(&prefix_id)
             .and_then(|(_, vi)| vi.get())
@@ -511,48 +515,40 @@ where
     /// assert!(!trie.contains_key((u32::from_be_bytes([10, 1, 0, 0]), 16)));
     /// ```
     pub fn remove(&mut self, prefix: P) -> Option<V> {
-        let (parent_node, prefix_id, default_value_index) =
-            self.find_parent_node(prefix);
+        let value_index = self.remove_entry(0, prefix, 0, ValueIndex::NONE)?;
 
-        self.entries[parent_node].remove(&prefix_id).map(|(_, v)| {
-            // Update the leaf ranges
-            self.calculate_leaf_ranges(parent_node, default_value_index);
+        // Update the value indices in all the leaves and entries
+        for higher_v in self
+            .leaves
+            .iter_mut()
+            .chain(
+                self.entries
+                    .iter_mut()
+                    .flat_map(|s| s.values_mut().map(|(_, vi)| vi)),
+            )
+            .filter(|higher_v| **higher_v > value_index)
+        {
+            higher_v.decrement();
+        }
 
-            // Update the value indices in all the leaves and entries
-            for higher_v in self
-                .leaves
-                .iter_mut()
-                .chain(
-                    self.entries
-                        .iter_mut()
-                        .flat_map(|s| s.values_mut().map(|(_, vi)| vi)),
-                )
-                .filter(|higher_v| **higher_v > v)
-            {
-                higher_v.decrement();
-            }
-
-            // SAFETY: The value is guaranteed to exist because it was just removed from the
-            // entry map.
-            self.values.remove(v.get().unwrap())
-        })
+        // SAFETY: The value is guaranteed to exist because it was just removed from the
+        // entry map.
+        Some(self.values.remove(value_index.get().unwrap()))
     }
 
-    /// Find the final parent node and the `PrefixId` of the given key.
-    fn find_parent_node(&self, prefix: P) -> (usize, PrefixId, ValueIndex) {
+    /// Find the final parent node and the `PrefixId` of the given key if it exists.
+    fn find_parent_node(&self, prefix: P) -> Option<(usize, PrefixId)> {
         let address = prefix.address();
         let prefix_length = prefix.prefix_length();
         let mut offset = 0;
         let mut parent_node_index = 0;
         let mut parent_node = &self.nodes[parent_node_index];
-        let mut default_value_index = ValueIndex::NONE;
 
         while prefix_length >= offset + STRIDE {
             let local_id = StrideId::from_address(address, offset, STRIDE);
-            default_value_index = self.get_default(parent_node_index, local_id);
 
             if !parent_node.node_bitmap.contains(local_id) {
-                break;
+                return None;
             }
 
             parent_node_index = parent_node.get_child_index(local_id);
@@ -565,7 +561,78 @@ where
         let prefix_id =
             PrefixId::from_address(address, offset, remaining_length);
 
-        (parent_node_index, prefix_id, default_value_index)
+        Some((parent_node_index, prefix_id))
+    }
+
+    fn remove_entry(
+        &mut self,
+        parent_node_index: usize,
+        prefix: P,
+        offset: u8,
+        default_value_index: ValueIndex,
+    ) -> Option<ValueIndex> {
+        let address = prefix.address();
+        let prefix_length = prefix.prefix_length();
+
+        if prefix_length >= offset + STRIDE {
+            let local_id = StrideId::from_address(address, offset, STRIDE);
+
+            if self.nodes[parent_node_index].node_bitmap.contains(local_id) {
+                let default_value_index =
+                    self.get_default(parent_node_index, local_id);
+                let child_index =
+                    self.nodes[parent_node_index].get_child_index(local_id);
+                let value_index = self.remove_entry(
+                    child_index,
+                    prefix,
+                    offset + STRIDE,
+                    default_value_index,
+                )?;
+
+                if self.nodes[child_index].node_bitmap.is_empty()
+                    && self.entries[child_index].is_empty()
+                {
+                    self.remove_node(child_index, parent_node_index, local_id);
+                }
+                return Some(value_index);
+            }
+        }
+
+        let remaining_length = min(prefix_length - offset, STRIDE - 1);
+        let prefix_id =
+            PrefixId::from_address(address, offset, remaining_length);
+
+        self.entries[parent_node_index].remove(&prefix_id).map(|(_, v)| {
+            // Update the leaf ranges
+            self.calculate_leaf_ranges(parent_node_index, default_value_index);
+
+            v
+        })
+    }
+
+    fn remove_node(
+        &mut self,
+        node_index: usize,
+        parent_index: usize,
+        local_id: StrideId,
+    ) {
+        let leaf_base = self.nodes[node_index].leaf_base as usize;
+        assert_eq!(self.nodes[node_index].leaf_bitmap.pop_count(), 1);
+
+        self.nodes[parent_index].node_bitmap.clear(local_id);
+        self.nodes.remove(node_index);
+        self.leaves.remove(leaf_base);
+        self.entries.remove(node_index);
+
+        for n in &mut self.nodes {
+            if n.leaf_base > leaf_base as u32 {
+                n.leaf_base -= 1;
+            }
+        }
+
+        for node in &mut self.nodes[parent_index + 1..] {
+            node.node_base -= 1;
+        }
     }
 
     /// Find the next base node and leaf node index for a given parent node index.
