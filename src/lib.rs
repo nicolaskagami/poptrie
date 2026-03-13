@@ -687,8 +687,14 @@ where
                 self.leaves[leaf_bitmap_index] = *value;
             }
 
-            let next_id = StrideId((prefix + 1) << (STRIDE - len));
-            if next_id.0 != (1 << STRIDE) && !leaf_bitmap.contains(next_id) {
+            let Some(next_id) =
+                (prefix + 1).checked_shl((STRIDE - len) as u32).map(StrideId)
+            else {
+                continue;
+            };
+            if next_id.0 as u16 != (1 << STRIDE as u16)
+                && !leaf_bitmap.contains(next_id)
+            {
                 let next_bitmap_index =
                     leaf_base + leaf_bitmap.bitmap_index(next_id) as usize;
                 self.leaves.insert(next_bitmap_index, initial_value);
@@ -698,6 +704,7 @@ where
     }
 }
 
+const BITMAP_SIZE: usize = (1 << STRIDE as usize) / 64;
 /// An internal node in the trie
 #[derive(Debug, Clone, Default)]
 struct Node {
@@ -706,10 +713,10 @@ struct Node {
     debug_prefix: Vec<StrideId>,
 
     /// Bitmap of local nodes
-    node_bitmap: Bitmap,
+    node_bitmap: Bitmap<STRIDE, BITMAP_SIZE>,
 
     /// Bitmap of local prefixes
-    leaf_bitmap: Bitmap,
+    leaf_bitmap: Bitmap<STRIDE, BITMAP_SIZE>,
 
     /// Offset of the first node pointed by this node
     node_base: u32,
@@ -762,10 +769,10 @@ impl Node {
 // TODO: Analyze performance characteristics of doing it in-band:
 // - For `Poptrie::insert`, multiple leaves may have to added, where each insert pushes the following leaves
 // - We could not always shrink, trading a little cache locality for insertion speed.
-fn build_leaf_ranges(
+fn build_leaf_ranges<const STRIDE: u8, const N: usize>(
     entries: impl Iterator<Item = (PrefixId, ValueIndex)>,
     default_value_index: ValueIndex,
-) -> (Bitmap, Vec<ValueIndex>) {
+) -> (Bitmap<STRIDE, N>, Vec<ValueIndex>) {
     let mut leaf_bitmap = Bitmap::new();
 
     let mut entries = entries.peekable();
@@ -794,13 +801,19 @@ fn build_leaf_ranges(
             leaves[leaf_bitmap_index] = value;
         }
 
-        let next_id = StrideId((prefix + 1) << (STRIDE - len));
+        let Some(next_id) =
+            (prefix + 1).checked_shl((STRIDE - len) as u32).map(StrideId)
+        else {
+            continue;
+        };
 
         // Check if we need to insert a terminator
         // We don't insert if:
         // - It's the end of representation
         // - It already exists, meaning something more relevant is already there
-        if next_id.0 != (1 << STRIDE) && !leaf_bitmap.contains(next_id) {
+        if next_id.0 as u16 != (1 << STRIDE as u16)
+            && !leaf_bitmap.contains(next_id)
+        {
             let next_bitmap_index = leaf_bitmap.bitmap_index(next_id) as usize;
             leaves.insert(next_bitmap_index, initial_value);
             leaf_bitmap.set(next_id);
