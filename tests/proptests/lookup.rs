@@ -64,8 +64,10 @@ proptest! {
             prop_assert!(poptrie.contains_key((prefix.addr.to_bits(), prefix.prefix_len)));
 
             // Delete
-            poptrie.remove((prefix.addr.to_bits(), prefix.prefix_len));
-            reference.remove(prefix.addr, prefix.prefix_len);
+            prop_assert_eq!(
+                poptrie.remove((prefix.addr.to_bits(), prefix.prefix_len)),
+                reference.remove(prefix.addr, prefix.prefix_len)
+            );
 
             // Assert that the poptrie no longer contains the prefix after deletion
             prop_assert!(!poptrie.contains_key((prefix.addr.to_bits(), prefix.prefix_len)));
