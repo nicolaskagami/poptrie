@@ -53,6 +53,7 @@ impl Bitmap {
         self.0.count_ones()
     }
 
+    /// Returns true if the bitmap is empty.
     #[inline(always)]
     pub(crate) fn is_empty(&self) -> bool {
         self.0 == 0

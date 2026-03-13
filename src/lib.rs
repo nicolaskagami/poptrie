@@ -564,6 +564,7 @@ where
         Some((parent_node_index, prefix_id))
     }
 
+    /// Recursively searches for an entry to remove, cleaning up empty internal nodes on the way back.
     fn remove_entry(
         &mut self,
         parent_node_index: usize,
@@ -580,8 +581,10 @@ where
             if self.nodes[parent_node_index].node_bitmap.contains(local_id) {
                 let default_value_index =
                     self.get_default(parent_node_index, local_id);
+
                 let child_index =
                     self.nodes[parent_node_index].get_child_index(local_id);
+
                 let value_index = self.remove_entry(
                     child_index,
                     prefix,
@@ -610,6 +613,7 @@ where
         })
     }
 
+    /// Remove a node from the trie, updating leaf ranges and node bases.
     fn remove_node(
         &mut self,
         node_index: usize,
@@ -617,17 +621,14 @@ where
         local_id: StrideId,
     ) {
         let leaf_base = self.nodes[node_index].leaf_base as usize;
-        assert_eq!(self.nodes[node_index].leaf_bitmap.pop_count(), 1);
 
         self.nodes[parent_index].node_bitmap.clear(local_id);
         self.nodes.remove(node_index);
         self.leaves.remove(leaf_base);
         self.entries.remove(node_index);
 
-        for n in &mut self.nodes {
-            if n.leaf_base > leaf_base as u32 {
-                n.leaf_base -= 1;
-            }
+        for node in &mut self.nodes[node_index..] {
+            node.leaf_base -= 1;
         }
 
         for node in &mut self.nodes[parent_index + 1..] {
