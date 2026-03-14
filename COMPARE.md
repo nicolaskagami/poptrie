@@ -15,7 +15,6 @@ Compared to it, this crate has the following advantages:
 - More mature API
   - They have support for `PrefixSet`, `Entry` and `TrieView`/`TrieMutView` which we haven't yet implemented. Their codebase is very well documented as battle tested.
 
-
 ## `pixos/poptrie`
 [pixos/poptrie](https://github.com/pixos/poptrie) is the reference implementation in C for the original Poptrie paper. A thin Rust wrapper was developed around its API for benchmarking purposes.
 

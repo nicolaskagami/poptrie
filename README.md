@@ -22,6 +22,12 @@ This is particularly useful for IP forwarding tables (FIBs), where the longest-p
 - Supports common collection methods such as `insert()`, `remove()`, `keys()`, `values()`, etc.
 - Supports fast construction with `FromIterator` and the ergonomic `IntoIter` patterns.
 
+### Documentation
+
+- [Design & Architecture](DESIGN.md) — implementation details, data structure internals, and design decisions.
+- [Benchmarks](BENCHMARK.md) — benchmark methodology and results.
+- [Comparisons](COMPARE.md) — comparisons with other LPM implementations.
+
 ## Usage
 
 ### Installation
