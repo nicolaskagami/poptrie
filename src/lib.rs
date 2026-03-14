@@ -34,7 +34,6 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitmap::*;
-use core::cmp::min;
 use value_index::ValueIndex;
 
 /// The maximum number of bits we can consume from the prefix at a time.
@@ -557,9 +556,8 @@ where
             offset += STRIDE;
         }
 
-        let remaining_length = min(prefix_length - offset, STRIDE - 1);
         let prefix_id =
-            PrefixId::from_address(address, offset, remaining_length);
+            PrefixId::from_address(address, offset, prefix_length - offset);
 
         Some((parent_node_index, prefix_id))
     }
@@ -578,39 +576,42 @@ where
         if prefix_length >= offset + STRIDE {
             let local_id = StrideId::from_address(address, offset, STRIDE);
 
-            if self.nodes[parent_node_index].node_bitmap.contains(local_id) {
-                let default_value_index =
-                    self.get_default(parent_node_index, local_id);
-
-                let child_index =
-                    self.nodes[parent_node_index].get_child_index(local_id);
-
-                let value_index = self.remove_entry(
-                    child_index,
-                    prefix,
-                    offset + STRIDE,
-                    default_value_index,
-                )?;
-
-                if self.nodes[child_index].node_bitmap.is_empty()
-                    && self.entries[child_index].is_empty()
-                {
-                    self.remove_node(child_index, parent_node_index, local_id);
-                }
-                return Some(value_index);
+            if !self.nodes[parent_node_index].node_bitmap.contains(local_id) {
+                return None;
             }
+
+            let child_default = self.get_default(parent_node_index, local_id);
+            let child_index =
+                self.nodes[parent_node_index].get_child_index(local_id);
+
+            let value_index = self.remove_entry(
+                child_index,
+                prefix,
+                offset + STRIDE,
+                child_default,
+            )?;
+
+            if self.nodes[child_index].node_bitmap.is_empty()
+                && self.entries[child_index].is_empty()
+            {
+                self.remove_node(child_index, parent_node_index, local_id);
+            }
+
+            Some(value_index)
+        } else {
+            let prefix_id =
+                PrefixId::from_address(address, offset, prefix_length - offset);
+
+            self.entries[parent_node_index].remove(&prefix_id).map(|(_, v)| {
+                // Update the leaf ranges
+                self.calculate_leaf_ranges(
+                    parent_node_index,
+                    default_value_index,
+                );
+
+                v
+            })
         }
-
-        let remaining_length = min(prefix_length - offset, STRIDE - 1);
-        let prefix_id =
-            PrefixId::from_address(address, offset, remaining_length);
-
-        self.entries[parent_node_index].remove(&prefix_id).map(|(_, v)| {
-            // Update the leaf ranges
-            self.calculate_leaf_ranges(parent_node_index, default_value_index);
-
-            v
-        })
     }
 
     /// Remove a node from the trie, updating leaf ranges and node bases.
