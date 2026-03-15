@@ -65,8 +65,8 @@ type Entry<P> = (P, ValueIndex);
 /// trie.insert((Ipv4Addr::from([10, 0, 0, 0]), 8), "8");
 ///
 /// // Perform longest prefix match lookups
-/// assert_eq!(trie.lookup(Ipv4Addr::from([192, 168, 1, 5])),Some(&"24"));
-/// assert_eq!(trie.lookup(Ipv4Addr::from([192, 168, 2, 5])),Some(&"16"));
+/// assert_eq!(trie.lookup(Ipv4Addr::from([192, 168, 1, 5])), Some(&"24"));
+/// assert_eq!(trie.lookup(Ipv4Addr::from([192, 168, 2, 5])), Some(&"16"));
 /// assert_eq!(trie.lookup(Ipv4Addr::from([10, 1, 2, 3])), Some(&"8"));
 /// assert_eq!(trie.lookup(Ipv4Addr::from([8, 8, 8, 8])), None);
 /// ```
@@ -311,12 +311,9 @@ where
     /// assert!(!trie.contains_key((u32::from_be_bytes([192, 168, 0, 0]), 16)));
     /// ```
     pub fn contains_key(&self, prefix: P) -> bool {
-        self.find_parent_node(prefix).map_or_else(
-            || false,
-            |(parent_node, prefix_id)| {
-                self.entries[parent_node].contains_key(&prefix_id)
-            },
-        )
+        self.find_parent_node(prefix).is_some_and(|(parent_node, prefix_id)| {
+            self.entries[parent_node].contains_key(&prefix_id)
+        })
     }
 
     /// Returns the number of entries in the trie.
