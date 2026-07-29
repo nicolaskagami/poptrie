@@ -1,21 +1,9 @@
-//! # poptrie
+//! Core lookup-only types for poptrie.
 //!
-//! A pure Rust implementation of [Poptrie](https://dl.acm.org/doi/abs/10.1145/2829988.2787474),
-//! a data structure for efficient longest-prefix matching (LPM) lookups.
-//!
-//! Poptrie uses bitmaps combined with the popcount instruction to achieve fast IP routing
-//! table lookups with high cache locality. During lookup, the key is consumed in the biggest
-//! step that can be represented in a bitmap for which the native popcount instruction exists
-//! (i.e. 6-bit steps in a 64-bit bitmap), similarly to how a tree-bitmap works, but with a
-//! more contiguous use of memory, trading insertion speed for cache locality.
-//!
-//! This is particularly useful for IP forwarding tables, where the longest-prefix matching is a
-//! common operation and insertions are comparatively rare.
-//!
-//! # Reference
-//! Asai, Hirochika, and Yasuhiro Ohara. **[Poptrie: A Compressed Trie with Population Count for
-//! Fast and Scalable Software IP Routing Table Lookup](https://doi.org/10.1145/2829988.2787474)**
-//! ACM SIGCOMM Computer Communication Review 45.4 (2015): 57-70.
+//! Contains [`PoptrieCore`] and [`Node`], the data that participates in
+//! longest-prefix-match lookups. When the `rkyv` feature is enabled, these
+//! types support zero-copy serialization.
+
 use core::marker::PhantomData;
 
 pub use crate::prefix::Prefix;
@@ -26,11 +14,18 @@ use crate::value_index::ValueIndex;
 
 /// The core of a compressed prefix tree optimized for fast longest prefix match (LPM) lookups.
 ///
-/// # Type Parameters
+/// This is the serializable subset of [`crate::Poptrie`]: it contains the node
+/// tree, leaf mappings, and values, but excludes the `entries` map which stores
+/// prefix metadata used only for mutation and iteration.
 ///
-/// * `P`: [`Prefix`] - The prefix type (e.g. `(u32, u8)` for IPv4 or `(u128, u8)` for IPv6),
-/// * `V` - The value type associated with each prefix.
+/// When the `rkyv` feature is enabled, [`PoptrieCore`] can be serialized with
+/// `rkyv::to_bytes` and accessed zero-copy via [`ArchivedPoptrieCore::lookup`].
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize),
+    rkyv(compare(PartialEq))
+)]
 pub struct PoptrieCore<P, V>
 where
     P: Prefix,
@@ -44,7 +39,7 @@ where
     /// The values associated with the prefixes.
     pub(crate) values: Vec<V>,
 
-    // Pins the prefix type
+    /// Pins the prefix type.
     pub(crate) _phantom: PhantomData<P>,
 }
 
@@ -52,33 +47,9 @@ impl<P, V> PoptrieCore<P, V>
 where
     P: Prefix,
 {
-     /// Lookup an address in the trie, performing longest-prefix match.
+    /// Lookup an address in the trie, performing longest-prefix match.
     ///
     /// Returns `None` if no prefix matches the key.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use poptrie::Poptrie;
-    ///
-    /// let mut trie = Poptrie::new();
-    ///
-    /// // No match without a default route
-    /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), None);
-    ///
-    /// trie.insert((0u32, 0), "default");
-    /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), "10/8");
-    /// trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), "10.1/16");
-    ///
-    /// // Longest prefix match: 10.1.2.3 matches 10.1/16
-    /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 2, 3])), Some(&"10.1/16"));
-    ///
-    /// // Falls back to 10/8
-    /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 2, 0, 0])), Some(&"10/8"));
-    ///
-    /// // Falls back to default
-    /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), Some(&"default"));
-    /// ```
     pub fn lookup<A: Into<P::ADDRESS>>(&self, address: A) -> Option<&V> {
         let address = address.into();
 
@@ -146,6 +117,11 @@ where
 
 /// An internal node in the trie
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize),
+    rkyv(compare(PartialEq))
+)]
 pub(crate) struct Node {
     /// Debug field for keeping track of stride ascendancy.
     #[cfg(test)]
@@ -166,7 +142,8 @@ pub(crate) struct Node {
 
 impl Node {
     pub(crate) fn new(
-        #[cfg(test)] debug_prefix: Vec<StrideId>,
+        #[cfg(test)]
+        debug_prefix: Vec<StrideId>,
         node_base: u32,
         leaf_base: u32,
     ) -> Self {
@@ -184,5 +161,139 @@ impl Node {
     #[inline(always)]
     pub(crate) fn get_child_index(&self, local_id: StrideId) -> usize {
         (self.node_base + self.node_bitmap.bitmap_index(local_id)) as usize
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_lookup_matches() {
+        let mut core = PoptrieCore {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+            values: Vec::<u32>::new(),
+            _phantom: PhantomData::<(u32, u8)>,
+        };
+
+        let mut root = Node::new(
+            #[cfg(test)]
+            Vec::new(),
+            1,
+            0,
+        );
+        root.leaf_bitmap.set(StrideId(0));
+        core.nodes.push(root);
+        core.leaves.push(ValueIndex::NONE);
+
+        assert_eq!(core.lookup(0u32), None);
+    }
+
+    #[cfg(feature = "rkyv")]
+    #[test]
+    fn core_roundtrip_u32() {
+        let mut core = PoptrieCore {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+            values: Vec::<u32>::new(),
+            _phantom: PhantomData::<(u32, u8)>,
+        };
+
+        let mut root = Node::new(
+            #[cfg(test)]
+            Vec::new(),
+            1,
+            0,
+        );
+        root.leaf_bitmap.set(StrideId(0));
+        core.nodes.push(root);
+        core.leaves.push(ValueIndex::new(0));
+        core.values.push(42u32);
+
+        let bytes = rkyv::to_bytes::<rkyv::rancor::BoxedError>(&core).expect("serialization failed");
+        let archived = rkyv::access::<ArchivedPoptrieCore<(u32, u8), u32>, rkyv::rancor::BoxedError>(&bytes)
+            .expect("deserialization failed");
+
+        assert_eq!(
+            archived.lookup(0u32).map(|&v| u32::from(v)),
+            Some(42)
+        );
+    }
+
+    #[cfg(feature = "rkyv")]
+    #[test]
+    fn core_roundtrip_with_entries() {
+        let mut trie = crate::Poptrie::<(u32, u8), u32>::new();
+        trie.insert((0u32, 0), 0);
+        trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8);
+        trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), 16);
+        trie.insert((u32::from_be_bytes([10, 1, 2, 0]), 24), 24);
+
+        let core = trie.into_core();
+
+        let bytes = rkyv::to_bytes::<rkyv::rancor::BoxedError>(&core).expect("serialization failed");
+        let archived = rkyv::access::<ArchivedPoptrieCore<(u32, u8), u32>, rkyv::rancor::BoxedError>(&bytes)
+            .expect("deserialization failed");
+
+        assert_eq!(
+            archived
+                .lookup(u32::from_be_bytes([10, 1, 2, 3]))
+                .map(|&v| u32::from(v)),
+            Some(24)
+        );
+        assert_eq!(
+            archived
+                .lookup(u32::from_be_bytes([10, 0, 1, 1]))
+                .map(|&v| u32::from(v)),
+            Some(8)
+        );
+        assert_eq!(
+            archived
+                .lookup(u32::from_be_bytes([10, 1, 1, 1]))
+                .map(|&v| u32::from(v)),
+            Some(16)
+        );
+        assert_eq!(
+            archived
+                .lookup(u32::from_be_bytes([8, 8, 8, 8]))
+                .map(|&v| u32::from(v)),
+            Some(0)
+        );
+        assert_eq!(
+            archived
+                .lookup(u32::from_be_bytes([192, 168, 0, 1]))
+                .map(|&v| u32::from(v)),
+            Some(0)
+        );
+    }
+
+    #[cfg(feature = "rkyv")]
+    #[test]
+    fn core_roundtrip_string_values() {
+        let mut core = PoptrieCore {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+            values: Vec::<alloc::string::String>::new(),
+            _phantom: PhantomData::<(u32, u8)>,
+        };
+
+        let mut root = Node::new(
+            #[cfg(test)]
+            Vec::new(),
+            1,
+            0,
+        );
+        root.leaf_bitmap.set(StrideId(0));
+        core.nodes.push(root);
+        core.leaves.push(ValueIndex::new(0));
+        core.values.push("default".into());
+
+        let bytes = rkyv::to_bytes::<rkyv::rancor::BoxedError>(&core).expect("serialization failed");
+        let archived =
+            rkyv::access::<ArchivedPoptrieCore<(u32, u8), alloc::string::String>, rkyv::rancor::BoxedError>(&bytes)
+                .expect("deserialization failed");
+
+        assert_eq!(archived.lookup(0u32).map(|s| s.as_str()), Some("default"));
     }
 }
