@@ -25,6 +25,7 @@ mod bitmap;
 mod iter;
 mod prefix;
 mod value_index;
+mod inner;
 
 pub use address::Address;
 pub use iter::{IntoIter, Iter, IterMut, Keys, Values, ValuesMut};
@@ -33,14 +34,17 @@ pub use prefix::Prefix;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::{mem, ops::Deref};
 use bitmap::*;
 use value_index::ValueIndex;
+
+use crate::inner::{Node, PoptrieCore};
 
 /// The maximum number of bits we can consume from the prefix at a time.
 ///
 /// This is 6 because the 2^6 = 64, which is the biggest size for which a native popcount
 /// instruction exists.
-const STRIDE: u8 = 6;
+pub(crate) const STRIDE: u8 = 6;
 
 /// A tuple representing a prefix entry in the trie, consisting of a prefix and value index.
 type Entry<P> = (P, ValueIndex);
@@ -75,14 +79,8 @@ pub struct Poptrie<P, V>
 where
     P: Prefix,
 {
-    /// The internal nodes of the trie.
-    nodes: Vec<Node>,
-
-    /// The leaves of the trie, pointing to indices in the values vector.
-    leaves: Vec<ValueIndex>,
-
-    /// The values associated with the prefixes.
-    values: Vec<V>,
+    /// The internal implementation
+    inner: PoptrieCore<P, V>,
 
     /// The entries associated with each node.
     entries: Vec<BTreeMap<PrefixId, Entry<P>>>,
@@ -111,10 +109,13 @@ where
         // Register the default value bit
         root_node.leaf_bitmap.set(StrideId(0));
         Poptrie::<P, V> {
-            values: Vec::new(),
-            nodes: vec![root_node], // Start with a root node
+            inner: PoptrieCore {
+                values: Vec::new(),
+                nodes: vec![root_node], // Start with a root node
+                leaves: vec![ValueIndex::NONE], // Global default value index
+                _phantom: Default::default(),
+            },
             entries: vec![BTreeMap::new()], // Root's entries
-            leaves: vec![ValueIndex::NONE], // Global default value index
         }
     }
 
@@ -155,7 +156,7 @@ where
 
         // First node is root
         let mut parent_node_index = 0;
-        let mut parent_node = &self.nodes[parent_node_index];
+        let mut parent_node = &self.inner.nodes[parent_node_index];
 
         // Check if it's in the correct depth
         // We MUST use '>=' here to ensure that full strides always direct towards inner nodes.
@@ -171,7 +172,7 @@ where
                 let (next_node_base, next_leaf_base) =
                     self.find_next_base(full_node_index);
 
-                self.nodes.insert(
+                self.inner.nodes.insert(
                     full_node_index,
                     Node::new(
                         #[cfg(test)]
@@ -183,32 +184,32 @@ where
                 );
 
                 // Set the node bitmap for the new node
-                self.nodes[parent_node_index].node_bitmap.set(local_id);
+                self.inner.nodes[parent_node_index].node_bitmap.set(local_id);
 
                 // Increment every single node after parent_node_index
-                for i in parent_node_index + 1..self.nodes.len() {
-                    self.nodes[i].node_base += 1;
+                for i in parent_node_index + 1..self.inner.nodes.len() {
+                    self.inner.nodes[i].node_base += 1;
                 }
 
                 // Also insert into entries
                 self.entries.insert(full_node_index, BTreeMap::new());
 
                 // Insert the default leaf, always at the base, representing the full range
-                self.leaves
+                self.inner.leaves
                     .insert(next_leaf_base as usize, default_value_index);
 
                 // Update offsets after the index
                 // Now we can insert leaves - It's relatively slow having to shift everything
-                for i in full_node_index + 1..self.nodes.len() {
-                    self.nodes[i].leaf_base += 1;
+                for i in full_node_index + 1..self.inner.nodes.len() {
+                    self.inner.nodes[i].leaf_base += 1;
                 }
 
                 // Set the default leaf at 0
-                self.nodes[full_node_index].leaf_bitmap.set(StrideId(0));
+                self.inner.nodes[full_node_index].leaf_bitmap.set(StrideId(0));
             }
 
             parent_node_index = full_node_index;
-            parent_node = &self.nodes[parent_node_index];
+            parent_node = &self.inner.nodes[parent_node_index];
 
             offset += STRIDE;
         }
@@ -222,12 +223,12 @@ where
             .get(&prefix_id)
             .and_then(|(_, v)| v.get())
         {
-            core::mem::swap(&mut value, &mut self.values[idx]);
+            mem::swap(&mut value, &mut self.inner.values[idx]);
             Some(value)
         } else {
-            self.values.push(value);
+            self.inner.values.push(value);
             let current_value_index =
-                ValueIndex::new((self.values.len() - 1) as u32);
+                ValueIndex::new((self.inner.values.len() - 1) as u32);
             self.entries[parent_node_index]
                 .insert(prefix_id, (prefix, current_value_index));
             None
@@ -267,33 +268,7 @@ where
     /// assert_eq!(trie.lookup(u32::from_be_bytes([8, 8, 8, 8])), Some(&"default"));
     /// ```
     pub fn lookup<A: Into<P::ADDRESS>>(&self, address: A) -> Option<&V> {
-        let address = address.into();
-
-        let mut offset = 0;
-        // First node is root
-        let mut parent_node_index = 0;
-        let mut parent_node = &self.nodes[parent_node_index];
-
-        let mut local_id = StrideId::from_address(address, offset, STRIDE);
-
-        // Should always try internal nodes first.
-        while parent_node.node_bitmap.contains(local_id) {
-            // If there's a valid internal node, traverse it
-            parent_node_index = parent_node.get_child_index(local_id);
-            parent_node = &self.nodes[parent_node_index];
-
-            // Update key offset and local ID
-            offset += STRIDE;
-            local_id = StrideId::from_address(address, offset, STRIDE);
-        }
-
-        // There will always be at least a 0th leaf (e.g. with the default)
-        let leaf_index = parent_node.leaf_bitmap.leafvec_index(local_id);
-
-        let leaf_base = parent_node.leaf_base;
-        let value_index = self.leaves[(leaf_base + leaf_index) as usize];
-
-        value_index.get().map(|i| &self.values[i])
+        self.inner.lookup(address)
     }
 
     /// Returns `true` if the trie contains an entry for the exact prefix.
@@ -330,7 +305,7 @@ where
     /// assert_eq!(trie.len(), 1);
     /// ```
     pub fn len(&self) -> usize {
-        self.values.len()
+        self.inner.len()
     }
 
     /// Returns `true` if the trie contains no prefixes.
@@ -347,7 +322,7 @@ where
     /// assert!(!trie.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
+        self.inner.is_empty()
     }
 
     /// Returns a reference to the value associated with the exact prefix, or
@@ -368,7 +343,7 @@ where
         let (parent_node, prefix_id) = self.find_parent_node(prefix)?;
         self.entries[parent_node]
             .get(&prefix_id)
-            .and_then(|(_, vi)| vi.get().map(|i| &self.values[i]))
+            .and_then(|(_, vi)| vi.get().map(|i| &self.inner.values[i]))
     }
 
     /// Returns a mutable reference to the value associated with the exact
@@ -393,7 +368,7 @@ where
         self.entries[parent_node]
             .get(&prefix_id)
             .and_then(|(_, vi)| vi.get())
-            .map(|i| &mut self.values[i])
+            .map(|i| &mut self.inner.values[i])
     }
 
     /// Returns an iterator over the prefixes of the trie, in lexicographic order of `(prefix_length, address)`.
@@ -515,7 +490,7 @@ where
 
         // Update the value indices in all the leaves and entries
         for higher_v in self
-            .leaves
+            .inner.leaves
             .iter_mut()
             .chain(
                 self.entries
@@ -529,7 +504,12 @@ where
 
         // SAFETY: The value is guaranteed to exist because it was just removed from the
         // entry map.
-        Some(self.values.remove(value_index.get().unwrap()))
+        Some(self.inner.values.remove(value_index.get().unwrap()))
+    }
+
+    /// Returns the inner read-only core of the trie
+    pub fn into_core(self) -> PoptrieCore<P, V> {
+        self.inner
     }
 
     /// Find the final parent node and the `PrefixId` of the given key if it exists.
@@ -538,7 +518,7 @@ where
         let prefix_length = prefix.prefix_length();
         let mut offset = 0;
         let mut parent_node_index = 0;
-        let mut parent_node = &self.nodes[parent_node_index];
+        let mut parent_node = &self.inner.nodes[parent_node_index];
 
         while prefix_length >= offset + STRIDE {
             let local_id = StrideId::from_address(address, offset, STRIDE);
@@ -548,7 +528,7 @@ where
             }
 
             parent_node_index = parent_node.get_child_index(local_id);
-            parent_node = &self.nodes[parent_node_index];
+            parent_node = &self.inner.nodes[parent_node_index];
 
             offset += STRIDE;
         }
@@ -573,13 +553,13 @@ where
         if prefix_length >= offset + STRIDE {
             let local_id = StrideId::from_address(address, offset, STRIDE);
 
-            if !self.nodes[parent_node_index].node_bitmap.contains(local_id) {
+            if !self.inner.nodes[parent_node_index].node_bitmap.contains(local_id) {
                 return None;
             }
 
             let child_default = self.get_default(parent_node_index, local_id);
             let child_index =
-                self.nodes[parent_node_index].get_child_index(local_id);
+                self.inner.nodes[parent_node_index].get_child_index(local_id);
 
             let value_index = self.remove_entry(
                 child_index,
@@ -588,7 +568,7 @@ where
                 child_default,
             )?;
 
-            if self.nodes[child_index].node_bitmap.is_empty()
+            if self.inner.nodes[child_index].node_bitmap.is_empty()
                 && self.entries[child_index].is_empty()
             {
                 self.remove_node(child_index, parent_node_index, local_id);
@@ -618,18 +598,18 @@ where
         parent_index: usize,
         local_id: StrideId,
     ) {
-        let leaf_base = self.nodes[node_index].leaf_base as usize;
+        let leaf_base = self.inner.nodes[node_index].leaf_base as usize;
 
-        self.nodes[parent_index].node_bitmap.clear(local_id);
-        self.nodes.remove(node_index);
-        self.leaves.remove(leaf_base);
+        self.inner.nodes[parent_index].node_bitmap.clear(local_id);
+        self.inner.nodes.remove(node_index);
+        self.inner.leaves.remove(leaf_base);
         self.entries.remove(node_index);
 
-        for node in &mut self.nodes[node_index..] {
+        for node in &mut self.inner.nodes[node_index..] {
             node.leaf_base -= 1;
         }
 
-        for node in &mut self.nodes[parent_index + 1..] {
+        for node in &mut self.inner.nodes[parent_index + 1..] {
             node.node_base -= 1;
         }
     }
@@ -637,7 +617,7 @@ where
     /// Find the next base node and leaf node index for a given parent node index.
     fn find_next_base(&self, next_node_index: usize) -> (u32, u32) {
         // SAFETY: We start with a root node at 0
-        let last_node = &self.nodes[next_node_index - 1];
+        let last_node = &self.inner.nodes[next_node_index - 1];
         let next_leaf_base =
             last_node.leaf_base + last_node.leaf_bitmap.pop_count();
         let next_node_base =
@@ -661,10 +641,10 @@ where
         default_value_index: ValueIndex,
     ) {
         // Currently using a not-in-place version
-        let leaf_base = self.nodes[node_index].leaf_base as usize;
+        let leaf_base = self.inner.nodes[node_index].leaf_base as usize;
 
         // Let's keep track of children's original defaults:
-        let ids = self.nodes[node_index].node_bitmap.bit_positions();
+        let ids = self.inner.nodes[node_index].node_bitmap.bit_positions();
         let original_defaults: Vec<_> = ids
             .iter()
             .map(|p| self.get_default(node_index, StrideId(*p)))
@@ -675,18 +655,18 @@ where
             default_value_index,
         );
 
-        let old_end = if node_index < self.nodes.len() - 1 {
-            self.nodes[node_index + 1].leaf_base as usize
+        let old_end = if node_index < self.inner.nodes.len() - 1 {
+            self.inner.nodes[node_index + 1].leaf_base as usize
         } else {
-            self.leaves.len()
+            self.inner.leaves.len()
         };
         let balance =
             new_leaves.len() as isize - (old_end - leaf_base) as isize;
 
-        self.nodes[node_index].leaf_bitmap = new_bitmap;
-        self.leaves.splice(leaf_base..old_end, new_leaves);
+        self.inner.nodes[node_index].leaf_bitmap = new_bitmap;
+        self.inner.leaves.splice(leaf_base..old_end, new_leaves);
 
-        for node in &mut self.nodes[node_index + 1..] {
+        for node in &mut self.inner.nodes[node_index + 1..] {
             node.leaf_base = (node.leaf_base as isize + balance) as u32;
         }
 
@@ -694,7 +674,7 @@ where
         for (i, id) in ids.iter().enumerate() {
             let new_default = self.get_default(node_index, StrideId(*id));
             if original_defaults[i] != new_default {
-                let child_index = self.nodes[node_index].node_base as usize + i;
+                let child_index = self.inner.nodes[node_index].node_base as usize + i;
                 self.calculate_leaf_ranges(child_index, new_default);
             }
         }
@@ -707,12 +687,12 @@ where
         parent_node_index: usize,
         node_stride_id: StrideId,
     ) -> ValueIndex {
-        let parent_node = &self.nodes[parent_node_index];
+        let parent_node = &self.inner.nodes[parent_node_index];
         let leaf_bitmap_index = parent_node.leaf_base
-            + self.nodes[parent_node_index]
+            + self.inner.nodes[parent_node_index]
                 .leaf_bitmap
                 .leafvec_index(node_stride_id);
-        self.leaves[leaf_bitmap_index as usize]
+        self.inner.leaves[leaf_bitmap_index as usize]
     }
 
     /// Very similar to `build_leaf_ranges`, but used only for bulk insertion.
@@ -725,8 +705,8 @@ where
         node_index: usize,
         default_value_index: ValueIndex,
     ) {
-        let leaf_base = self.nodes[node_index].leaf_base as usize;
-        let leaf_bitmap = &mut self.nodes[node_index].leaf_bitmap;
+        let leaf_base = self.inner.nodes[node_index].leaf_base as usize;
+        let leaf_bitmap = &mut self.inner.nodes[node_index].leaf_bitmap;
 
         let mut entries = self.entries[node_index].iter().peekable();
         let default = entries
@@ -735,75 +715,40 @@ where
             .map(|(_, (_, v))| *v)
             .unwrap_or(default_value_index);
 
-        self.leaves.insert(leaf_base, default);
+        self.inner.leaves.insert(leaf_base, default);
         leaf_bitmap.set(StrideId(0));
 
         for (prefix_id, (_, value)) in entries {
             let (prefix, len) = prefix_id.components();
             let leaf_id = prefix_id.stride_id();
             let leafvec_index = leaf_bitmap.leafvec_index(leaf_id);
-            let initial_value = self.leaves[leaf_base + leafvec_index as usize];
+            let initial_value = self.inner.leaves[leaf_base + leafvec_index as usize];
 
             let leaf_bitmap_index =
                 leaf_base + leaf_bitmap.bitmap_index(leaf_id) as usize;
             if !leaf_bitmap.contains(leaf_id) {
-                self.leaves.insert(leaf_bitmap_index, *value);
+                self.inner.leaves.insert(leaf_bitmap_index, *value);
                 leaf_bitmap.set(leaf_id);
             } else {
-                self.leaves[leaf_bitmap_index] = *value;
+                self.inner.leaves[leaf_bitmap_index] = *value;
             }
 
             let next_id = StrideId((prefix + 1) << (STRIDE - len));
             if next_id.0 != (1 << STRIDE) && !leaf_bitmap.contains(next_id) {
                 let next_bitmap_index =
                     leaf_base + leaf_bitmap.bitmap_index(next_id) as usize;
-                self.leaves.insert(next_bitmap_index, initial_value);
+                self.inner.leaves.insert(next_bitmap_index, initial_value);
                 leaf_bitmap.set(next_id);
             }
         }
     }
 }
 
-/// An internal node in the trie
-#[derive(Debug, Clone, Default)]
-struct Node {
-    /// Debug field for keeping track of stride ascendancy.
-    #[cfg(test)]
-    debug_prefix: Vec<StrideId>,
+impl<P, V> Deref for Poptrie<P, V> where P: Prefix {
+    type Target = PoptrieCore<P, V>;
 
-    /// Bitmap of local nodes
-    node_bitmap: Bitmap,
-
-    /// Bitmap of local prefixes
-    leaf_bitmap: Bitmap,
-
-    /// Offset of the first node pointed by this node
-    node_base: u32,
-
-    /// Offset of the first leaf pointed by this node
-    leaf_base: u32,
-}
-
-impl Node {
-    fn new(
-        #[cfg(test)] debug_prefix: Vec<StrideId>,
-        node_base: u32,
-        leaf_base: u32,
-    ) -> Self {
-        Node {
-            #[cfg(test)]
-            debug_prefix,
-            node_bitmap: Bitmap::new(),
-            leaf_bitmap: Bitmap::new(),
-            node_base,
-            leaf_base,
-        }
-    }
-
-    /// Returns the index of the child node pointed by `local_id`.
-    #[inline(always)]
-    fn get_child_index(&self, local_id: StrideId) -> usize {
-        (self.node_base + self.node_bitmap.bitmap_index(local_id)) as usize
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
