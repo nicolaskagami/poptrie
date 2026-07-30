@@ -51,32 +51,16 @@ where
     ///
     /// Returns `None` if no prefix matches the key.
     pub fn lookup<A: Into<P::ADDRESS>>(&self, address: A) -> Option<&V> {
-        let address = address.into();
+        let (base, off) = find_leaf(
+            &self.nodes,
+            address.into(),
+            |n: &Node| n.node_bitmap.0,
+            |n: &Node| n.leaf_bitmap.0,
+            |n: &Node| n.node_base,
+            |n: &Node| n.leaf_base,
+        )?;
 
-        let mut offset = 0;
-        // First node is root
-        let mut parent_node_index = 0;
-        let mut parent_node = &self.nodes[parent_node_index];
-
-        let mut local_id = StrideId::from_address(address, offset, crate::STRIDE);
-
-        // Should always try internal nodes first.
-        while parent_node.node_bitmap.contains(local_id) {
-            // If there's a valid internal node, traverse it
-            parent_node_index = parent_node.get_child_index(local_id);
-            parent_node = &self.nodes[parent_node_index];
-
-            // Update key offset and local ID
-            offset += crate::STRIDE;
-            local_id = StrideId::from_address(address, offset, crate::STRIDE);
-        }
-
-        // There will always be at least a 0th leaf (e.g. with the default)
-        let leaf_index = parent_node.leaf_bitmap.leafvec_index(local_id);
-
-        let leaf_base = parent_node.leaf_base;
-        let value_index = self.leaves[(leaf_base + leaf_index) as usize];
-
+        let value_index = self.leaves[(base + off) as usize];
         value_index.get().map(|i| &self.values[i])
     }
 
@@ -115,6 +99,46 @@ where
     }
 }
 
+/// Shared trie traversal: traverses the node tree for a given address and returns
+/// the linear position in the leaf array: `(leaf_base + leafvec_index)`.
+///
+/// All node-type-specific access is abstracted via closures.
+#[inline]
+fn find_leaf<N>(
+    nodes: &[N],
+    address: impl crate::Address,
+    node_bitmap: impl Fn(&N) -> u64,
+    leaf_bitmap: impl Fn(&N) -> u64,
+    node_base: impl Fn(&N) -> u32,
+    leaf_base: impl Fn(&N) -> u32,
+) -> Option<(u32, u32)> {
+    let mut offset = 0;
+    // First node is root
+    let mut parent_node_index = 0;
+    let mut parent_node = &nodes[parent_node_index];
+
+    let mut local_id = StrideId::from_address(address, offset, crate::STRIDE);
+
+    // Should always try internal nodes first.
+    while node_bitmap(parent_node) & (1 << local_id.0) != 0  {
+        // If there's a valid internal node, traverse it
+        parent_node_index = node_base(parent_node) as usize;
+        if local_id.0 != 0 {
+            parent_node_index += (node_bitmap(parent_node) << (64u8 - local_id.0)).count_ones() as usize;
+        }
+        parent_node = &nodes[parent_node_index];
+
+        // Update key offset and local ID
+        offset += crate::STRIDE;
+        local_id = StrideId::from_address(address, offset, crate::STRIDE);
+    }
+
+    // There will always be at least a 0th leaf (e.g. with the default)
+    let leafvec_off = (leaf_bitmap(parent_node) << (63u8 - local_id.0)).count_ones() - 1;
+
+    Some((leaf_base(parent_node), leafvec_off))
+}
+
 #[cfg(feature = "rkyv")]
 impl<P, V> ArchivedPoptrieCore<P, V>
 where
@@ -129,30 +153,17 @@ where
         &self,
         address: A,
     ) -> Option<&<V as rkyv::Archive>::Archived> {
-        let address = address.into();
-
-        let mut offset: u8 = 0;
-        let mut parent_node_index = 0;
-        let mut parent_node = &self.nodes[parent_node_index];
-
-        let mut local_id = StrideId::from_address(address, offset, crate::STRIDE);
-
-        // Traverse internal nodes via the archived bitmap accessors
-        while parent_node.node_bitmap.contains(local_id) {
-            parent_node_index = parent_node.get_child_index(local_id);
-            parent_node = &self.nodes[parent_node_index];
-            offset += crate::STRIDE;
-            local_id = StrideId::from_address(address, offset, crate::STRIDE);
-        }
-
-        // Find the leaf for the remaining stride
-        let leaf_index =
-            parent_node.leaf_bitmap.leafvec_index( local_id);
-        let leaf_base = u32::from(parent_node.leaf_base);
+        let (base, off) = find_leaf(
+            &self.nodes,
+            address.into(),
+            |n: &ArchivedNode| u64::from(n.node_bitmap.0),
+            |n: &ArchivedNode| u64::from(n.leaf_bitmap.0),
+            |n: &ArchivedNode| u32::from(n.node_base),
+            |n: &ArchivedNode| u32::from(n.leaf_base),
+        )?;
 
         // ArchivedValueIndex is Archived<u32> = rkyv::Endian<u32, LE>
-        let archived_vi = &self.leaves[(leaf_base + leaf_index) as usize];
-        let raw: u32 = archived_vi.0.into();
+        let raw: u32 = self.leaves[(base + off) as usize].0.into();
 
         if raw == u32::MAX {
             None
@@ -211,15 +222,6 @@ impl Node {
     }
 }
 
-#[cfg(feature = "rkyv",)]
-impl ArchivedNode {
-/// Returns the index of the child node pointed by `local_id`.
-    #[inline(always)]
-    pub(crate) fn get_child_index(&self, local_id: StrideId) -> usize {
-        (self.node_base + self.node_bitmap.bitmap_index(local_id)) as usize
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,7 +272,7 @@ mod tests {
         let bytes = rkyv::to_bytes::<rkyv::rancor::BoxedError>(&core).expect("serialization failed");
         let archived = rkyv::access::<ArchivedPoptrieCore<(u32, u8), u32>, rkyv::rancor::BoxedError>(&bytes)
             .expect("deserialization failed");
-        
+
         assert_eq!(
             archived.lookup(0u32).map(|&v| u32::from(v)),
             Some(42)
