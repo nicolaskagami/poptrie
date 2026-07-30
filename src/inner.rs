@@ -91,7 +91,7 @@ where
     /// assert_eq!(trie.len(), 0);
     ///
     /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32);
-    /// assert_eq!(trie.len(), 1);
+    /// assert_eq!(trie.into_core().len(), 1);
     /// ```
     pub fn len(&self) -> usize {
         self.values.len()
@@ -108,10 +108,57 @@ where
     /// assert!(trie.is_empty());
     ///
     /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32);
-    /// assert!(!trie.is_empty());
+    /// assert!(!trie.into_core().is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
+    }
+}
+
+#[cfg(feature = "rkyv")]
+impl<P, V> ArchivedPoptrieCore<P, V>
+where
+    P: Prefix,
+    V: rkyv::Archive,
+{
+    /// Zero-copy longest-prefix-match lookup on an archived poptrie core.
+    ///
+    /// Returns `None` if no prefix matches the key.
+    #[inline]
+    pub fn lookup<A: Into<P::ADDRESS>>(
+        &self,
+        address: A,
+    ) -> Option<&<V as rkyv::Archive>::Archived> {
+        let address = address.into();
+
+        let mut offset: u8 = 0;
+        let mut parent_node_index = 0;
+        let mut parent_node = &self.nodes[parent_node_index];
+
+        let mut local_id = StrideId::from_address(address, offset, crate::STRIDE);
+
+        // Traverse internal nodes via the archived bitmap accessors
+        while parent_node.node_bitmap.contains(local_id) {
+            parent_node_index = parent_node.get_child_index(local_id);
+            parent_node = &self.nodes[parent_node_index];
+            offset += crate::STRIDE;
+            local_id = StrideId::from_address(address, offset, crate::STRIDE);
+        }
+
+        // Find the leaf for the remaining stride
+        let leaf_index =
+            parent_node.leaf_bitmap.leafvec_index( local_id);
+        let leaf_base = u32::from(parent_node.leaf_base);
+
+        // ArchivedValueIndex is Archived<u32> = rkyv::Endian<u32, LE>
+        let archived_vi = &self.leaves[(leaf_base + leaf_index) as usize];
+        let raw: u32 = archived_vi.0.into();
+
+        if raw == u32::MAX {
+            None
+        } else {
+            Some(&self.values[raw as usize])
+        }
     }
 }
 
@@ -158,6 +205,15 @@ impl Node {
     }
 
     /// Returns the index of the child node pointed by `local_id`.
+    #[inline(always)]
+    pub(crate) fn get_child_index(&self, local_id: StrideId) -> usize {
+        (self.node_base + self.node_bitmap.bitmap_index(local_id)) as usize
+    }
+}
+
+#[cfg(feature = "rkyv",)]
+impl ArchivedNode {
+/// Returns the index of the child node pointed by `local_id`.
     #[inline(always)]
     pub(crate) fn get_child_index(&self, local_id: StrideId) -> usize {
         (self.node_base + self.node_bitmap.bitmap_index(local_id)) as usize
@@ -214,7 +270,7 @@ mod tests {
         let bytes = rkyv::to_bytes::<rkyv::rancor::BoxedError>(&core).expect("serialization failed");
         let archived = rkyv::access::<ArchivedPoptrieCore<(u32, u8), u32>, rkyv::rancor::BoxedError>(&bytes)
             .expect("deserialization failed");
-
+        
         assert_eq!(
             archived.lookup(0u32).map(|&v| u32::from(v)),
             Some(42)

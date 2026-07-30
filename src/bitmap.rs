@@ -76,6 +76,37 @@ impl Bitmap {
     }
 }
 
+#[cfg(feature = "rkyv")]
+impl ArchivedBitmap {
+    #[inline(always)]
+    pub(crate) fn contains(
+        &self,
+        id: StrideId,
+    ) -> bool {
+        u64::from(self.0) & (1 << id.0) != 0
+    }
+
+    #[inline(always)]
+    pub(crate) fn leafvec_index(
+        &self,
+        id: StrideId,
+    ) -> u32 {
+        (u64::from(self.0) << (63u8 - id.0)).count_ones() - 1
+    }
+
+    #[inline(always)]
+    pub(crate) fn bitmap_index(
+        &self,
+        id: StrideId,
+    ) -> u32 {
+        if id.0 == 0 {
+            0
+        } else {
+            (u64::from(self.0) << (64u8 - id.0)).count_ones()
+        }
+    }
+}
+
 /// A unique identifier for a prefix in the poptrie.
 ///
 /// The ID is a mapping of the last segment of the prefix, i.e. the last "stride", including the valid length.
