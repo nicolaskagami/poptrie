@@ -242,7 +242,7 @@ where
 
     /// Lookup an address in the trie, performing longest-prefix match.
     ///
-    /// Returns `None` if no prefix matches the key.
+    /// Returns a reference to the value, or `None` if no prefix matches the key.
     ///
     /// # Examples
     ///
@@ -269,6 +269,13 @@ where
     /// ```
     pub fn lookup<A: Into<P::ADDRESS>>(&self, address: A) -> Option<&V> {
         self.inner.lookup(address)
+    }
+
+    /// Lookup an address in the trie, performing longest-prefix match.
+    ///
+    /// Returns a mutable reference to the value, or `None` if no prefix matches the key.
+    pub fn lookup_mut<A: Into<P::ADDRESS>>(&mut self, address: A) -> Option<&mut V> {
+        self.inner.lookup_mut(address)
     }
 
     /// Returns `true` if the trie contains an entry for the exact prefix.

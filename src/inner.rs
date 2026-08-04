@@ -49,7 +49,7 @@ where
 {
     /// Lookup an address in the trie, performing longest-prefix match.
     ///
-    /// Returns `None` if no prefix matches the key.
+    /// Returns a reference to the value, or `None` if no prefix matches the key.
     pub fn lookup<A: Into<P::ADDRESS>>(&self, address: A) -> Option<&V> {
         let (base, off) = find_leaf(
             &self.nodes,
@@ -62,6 +62,23 @@ where
 
         let value_index = self.leaves[(base + off) as usize];
         value_index.get().map(|i| &self.values[i])
+    }
+
+    /// Lookup an address in the trie, performing longest-prefix match.
+    ///
+    /// Returns a mutable reference to the value, or `None` if no prefix matches the key.
+    pub fn lookup_mut<A: Into<P::ADDRESS>>(&mut self, address: A) -> Option<&mut V> {
+        let (base, off) = find_leaf(
+            &self.nodes,
+            address.into(),
+            |n: &Node| n.node_bitmap.0,
+            |n: &Node| n.leaf_bitmap.0,
+            |n: &Node| n.node_base,
+            |n: &Node| n.leaf_base,
+        )?;
+
+        let  value_index = self.leaves[(base + off) as usize];
+        value_index.get().map(|i| &mut self.values[i])
     }
 
     /// Returns the number of entries in the trie.
