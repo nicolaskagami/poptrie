@@ -4,7 +4,13 @@
 /// We use the highest representable value to signal `None` so we don't have to subtract.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
-pub(crate) struct ValueIndex(u32);
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize),
+    rkyv(compare(PartialEq)),
+    rkyv(derive(Debug))
+)]
+pub(crate) struct ValueIndex(pub(crate) u32);
 
 impl ValueIndex {
     pub(crate) const NONE: Self = Self(u32::MAX);

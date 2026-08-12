@@ -1,7 +1,5 @@
 use crate::{
-    Entry, Node, Poptrie, Prefix, STRIDE,
-    bitmap::{PrefixId, StrideId},
-    value_index::ValueIndex,
+    Entry, Node, Poptrie, Prefix, STRIDE, bitmap::{PrefixId, StrideId}, inner::PoptrieCore, value_index::ValueIndex
 };
 use alloc::{collections::btree_map, vec};
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
@@ -59,13 +57,13 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
             for (path, mut parent_node_index, prefix, address, len, value) in
                 items.extract_if(.., |(path, ..)| path.len() <= level)
             {
-                poptrie.values.push(value);
+                poptrie.inner.values.push(value);
                 let current_value_index =
-                    ValueIndex::new((poptrie.values.len() - 1) as u32);
+                    ValueIndex::new((poptrie.inner.values.len() - 1) as u32);
 
                 if level > 0 {
                     let local_id = path[level - 1];
-                    parent_node_index = poptrie.nodes[parent_node_index]
+                    parent_node_index = poptrie.inner.nodes[parent_node_index]
                         .get_child_index(local_id);
                 }
 
@@ -79,7 +77,7 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
 
             // Last step allows us to calculate the leaves
             for i in nodes_to_process.clone() {
-                poptrie.nodes[i].leaf_base = poptrie.leaves.len() as u32;
+                poptrie.inner.nodes[i].leaf_base = poptrie.inner.leaves.len() as u32;
                 poptrie.build_leaf_ranges_bulk_insert(i, defaults[i]);
             }
 
@@ -91,17 +89,17 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
                 // We MUST have already added its parents
                 if level > 0 {
                     let local_id = path[level - 1];
-                    *parent_node_index = poptrie.nodes[*parent_node_index]
+                    *parent_node_index = poptrie.inner.nodes[*parent_node_index]
                         .get_child_index(local_id);
                 }
                 let local_id = path[level];
                 // Add node if it doesn't exist
-                if !poptrie.nodes[*parent_node_index]
+                if !poptrie.inner.nodes[*parent_node_index]
                     .node_bitmap
                     .contains(local_id)
                 {
-                    poptrie.nodes.push(Node::default());
-                    poptrie.nodes[*parent_node_index].node_bitmap.set(local_id);
+                    poptrie.inner.nodes.push(Node::default());
+                    poptrie.inner.nodes[*parent_node_index].node_bitmap.set(local_id);
                     poptrie.entries.push(BTreeMap::new());
 
                     // The parent must be ready to provide a default
@@ -112,11 +110,11 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
             }
 
             // Now we can calculate node bases for all nodes of level-1 since they have the correct bitmaps.
-            for node in poptrie.nodes[nodes_to_process.clone()].iter_mut() {
+            for node in poptrie.inner.nodes[nodes_to_process.clone()].iter_mut() {
                 node.node_base = node_count;
                 node_count += node.node_bitmap.pop_count();
             }
-            nodes_to_process = nodes_to_process.end..poptrie.nodes.len();
+            nodes_to_process = nodes_to_process.end..poptrie.inner.nodes.len();
 
             level += 1;
         }
@@ -178,7 +176,7 @@ impl<P: Prefix, V> IntoIterator for Poptrie<P, V> {
     /// ]);
     /// ```
     fn into_iter(self) -> Self::IntoIter {
-        let values = self.values.into_iter().map(Some).collect();
+        let values = self.inner.values.into_iter().map(Some).collect();
         let mut entries = self.entries.into_iter();
         let current = entries.next().unwrap_or_default().into_iter();
 
@@ -234,7 +232,7 @@ impl<P: Prefix, V> Poptrie<P, V> {
     pub fn iter(&self) -> Iter<'_, P, V> {
         let mut entries = self.entries.iter();
         let current = entries.next().map(|m| m.iter()).unwrap_or_default();
-        Iter { entries, current, values: &self.values }
+        Iter { entries, current, values: &self.inner.values }
     }
 }
 
@@ -289,7 +287,7 @@ impl<P: Prefix, V> Poptrie<P, V> {
     /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 1, 1])), Some(&20));
     /// ```
     pub fn iter_mut(&mut self) -> IterMut<'_, P, V> {
-        let Poptrie { entries, values, .. } = self;
+        let Poptrie { entries, inner: PoptrieCore { values, .. },  .. } = self;
         let mut entries_iter = entries.iter();
         let current = entries_iter.next().map(|m| m.iter()).unwrap_or_default();
         IterMut {

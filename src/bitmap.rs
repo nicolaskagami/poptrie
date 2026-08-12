@@ -7,7 +7,12 @@ use crate::{
 
 /// A generic bitmap for storing u8 encoded ids of 0..63
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct Bitmap(u64);
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize),
+    rkyv(compare(PartialEq))
+)]
+pub(crate) struct Bitmap(pub(crate) u64);
 
 impl Bitmap {
     /// Creates a new unpopulated `LeafBitmap`.
@@ -83,7 +88,13 @@ impl Bitmap {
 /// This crucially halves the representational space, allowing us to use the most effective popcount implementation.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize),
+    rkyv(compare(PartialEq))
+)]
 pub(crate) struct PrefixId(pub(crate) u8);
+
 impl PrefixId {
     /// Creates a new `PrefixId` from a prefix and length.
     pub(crate) fn new(prefix: u8, len: u8) -> Self {
@@ -150,7 +161,13 @@ where
 /// A unique identifier for a stride in the poptrie.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize),
+    rkyv(compare(PartialEq))
+)]
 pub(crate) struct StrideId(pub(crate) u8);
+
 impl StrideId {
     pub(crate) fn from_address<A: Address>(
         address: A,

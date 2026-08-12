@@ -15,11 +15,13 @@ categories = ["network-programming", "data-structures", "no-std"]
 [dependencies]
 ipnet = { version = "2", default-features = false, optional = true }
 cidr = { version = "0.3", default-features = false, optional = true }
+rkyv = { version = "0.8", default-features = false, features = [ "alloc", "bytecheck" ], optional = true }
 
 [features]
 default = []
 ipnet = ["dep:ipnet"]
 cidr = ["dep:cidr"]
+rkyv = ["dep:rkyv"]
 
 
 [dev-dependencies]
