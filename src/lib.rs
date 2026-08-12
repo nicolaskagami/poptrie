@@ -30,6 +30,9 @@ mod inner;
 pub use address::Address;
 pub use iter::{IntoIter, Iter, IterMut, Keys, Values, ValuesMut};
 pub use prefix::Prefix;
+pub use inner::PoptrieCore;
+#[cfg(feature = "rkyv")]
+pub use inner::ArchivedPoptrieCore;
 
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
@@ -38,7 +41,7 @@ use core::{mem, ops::Deref};
 use bitmap::*;
 use value_index::ValueIndex;
 
-use crate::inner::{Node, PoptrieCore};
+use crate::inner::Node;
 
 /// The maximum number of bits we can consume from the prefix at a time.
 ///
