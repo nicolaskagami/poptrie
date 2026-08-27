@@ -1,7 +1,7 @@
 use crate::{
-    Entry, Node, Poptrie, Prefix, STRIDE,
+    Node, Poptrie, Prefix, STRIDE,
     bitmap::{PrefixId, StrideId},
-    value_index::ValueIndex,
+    entry_index::EntryIndex,
 };
 use alloc::{collections::btree_map, vec};
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
@@ -47,7 +47,7 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
         // - Insert the would-be leaves into entries.
         // - Insert the new internal nodes for that level, along with their defaults.
         // - Fix the parent's bitmaps with the information above.
-        let mut defaults = vec![ValueIndex::NONE];
+        let mut defaults = vec![EntryIndex::NONE];
         let mut level = 0;
 
         // Keeping track of node count and which nodes need to have their node bases set.
@@ -60,8 +60,9 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
                 items.extract_if(.., |(path, ..)| path.len() <= level)
             {
                 poptrie.values.push(value);
+                poptrie.prefixes.push(prefix);
                 let current_value_index =
-                    ValueIndex::new((poptrie.values.len() - 1) as u32);
+                    EntryIndex::new((poptrie.values.len() - 1) as u32);
 
                 if level > 0 {
                     let local_id = path[level - 1];
@@ -74,7 +75,7 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
                 let prefix_id =
                     PrefixId::from_address(address, offset, remaining_length);
                 poptrie.entries[parent_node_index]
-                    .insert(prefix_id, (prefix, current_value_index));
+                    .insert(prefix_id, current_value_index);
             }
 
             // Last step allows us to calculate the leaves
@@ -133,9 +134,10 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
 ///
 /// [`into_iter`]: IntoIterator::into_iter
 pub struct IntoIter<P: Prefix, V> {
-    entries: vec::IntoIter<BTreeMap<PrefixId, Entry<P>>>,
-    current: btree_map::IntoIter<PrefixId, Entry<P>>,
+    entries: vec::IntoIter<BTreeMap<PrefixId, EntryIndex>>,
+    current: btree_map::IntoIter<PrefixId, EntryIndex>,
     values: alloc::vec::Vec<Option<V>>,
+    prefixes: alloc::vec::Vec<P>,
 }
 
 impl<P: Prefix, V> Iterator for IntoIter<P, V> {
@@ -143,11 +145,11 @@ impl<P: Prefix, V> Iterator for IntoIter<P, V> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            for (_, (prefix, value_index)) in &mut self.current {
-                if let Some(value) =
-                    value_index.get().and_then(|idx| self.values[idx].take())
-                {
-                    return Some((prefix, value));
+            for (_, value_index) in &mut self.current {
+                if let Some(idx) = value_index.get() {
+                    if let Some(value) = self.values[idx].take() {
+                        return Some((self.prefixes[idx], value));
+                    }
                 }
             }
             self.current = self.entries.next()?.into_iter();
@@ -182,7 +184,7 @@ impl<P: Prefix, V> IntoIterator for Poptrie<P, V> {
         let mut entries = self.entries.into_iter();
         let current = entries.next().unwrap_or_default().into_iter();
 
-        IntoIter { entries, current, values }
+        IntoIter { entries, current, values, prefixes: self.prefixes }
     }
 }
 
@@ -194,9 +196,10 @@ impl<P: Prefix, V> IntoIterator for Poptrie<P, V> {
 ///
 /// [`iter`]: Poptrie::iter
 pub struct Iter<'a, P: Prefix, V> {
-    entries: core::slice::Iter<'a, BTreeMap<PrefixId, Entry<P>>>,
-    current: btree_map::Iter<'a, PrefixId, Entry<P>>,
+    entries: core::slice::Iter<'a, BTreeMap<PrefixId, EntryIndex>>,
+    current: btree_map::Iter<'a, PrefixId, EntryIndex>,
     values: &'a [V],
+    prefixes: &'a [P],
 }
 
 impl<'a, P: Prefix, V> Iterator for Iter<'a, P, V> {
@@ -204,9 +207,9 @@ impl<'a, P: Prefix, V> Iterator for Iter<'a, P, V> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            for (_, (prefix, value_index)) in &mut self.current {
+            for (_, value_index) in &mut self.current {
                 if let Some(idx) = value_index.get() {
-                    return Some((prefix, &self.values[idx]));
+                    return Some((&self.prefixes[idx], &self.values[idx]));
                 }
             }
             self.current = self.entries.next()?.iter();
@@ -234,7 +237,12 @@ impl<P: Prefix, V> Poptrie<P, V> {
     pub fn iter(&self) -> Iter<'_, P, V> {
         let mut entries = self.entries.iter();
         let current = entries.next().map(|m| m.iter()).unwrap_or_default();
-        Iter { entries, current, values: &self.values }
+        Iter {
+            entries,
+            current,
+            values: &self.values,
+            prefixes: &self.prefixes,
+        }
     }
 }
 
@@ -246,9 +254,10 @@ impl<P: Prefix, V> Poptrie<P, V> {
 ///
 /// [`iter_mut`]: Poptrie::iter_mut
 pub struct IterMut<'a, P: Prefix, V> {
-    entries: core::slice::Iter<'a, BTreeMap<PrefixId, Entry<P>>>,
-    current: btree_map::Iter<'a, PrefixId, Entry<P>>,
+    entries: core::slice::Iter<'a, BTreeMap<PrefixId, EntryIndex>>,
+    current: btree_map::Iter<'a, PrefixId, EntryIndex>,
     values: Vec<Option<&'a mut V>>, // Could be 15% faster with unsafe
+    prefixes: &'a [P],
 }
 
 impl<'a, P: Prefix, V> Iterator for IterMut<'a, P, V> {
@@ -256,11 +265,14 @@ impl<'a, P: Prefix, V> Iterator for IterMut<'a, P, V> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            for (_, (prefix, value_index)) in &mut self.current {
+            for (_, value_index) in &mut self.current {
                 if let Some(idx) = value_index.get() {
                     // SAFETY: Each ValueIndex is unique across all entries so
                     // no two yielded references alias.
-                    return Some((prefix, self.values[idx].take().unwrap()));
+                    return Some((
+                        &self.prefixes[idx],
+                        self.values[idx].take().unwrap(),
+                    ));
                 }
             }
             self.current = self.entries.next()?.iter();
@@ -289,13 +301,14 @@ impl<P: Prefix, V> Poptrie<P, V> {
     /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 1, 1])), Some(&20));
     /// ```
     pub fn iter_mut(&mut self) -> IterMut<'_, P, V> {
-        let Poptrie { entries, values, .. } = self;
+        let Poptrie { entries, values, prefixes, .. } = self;
         let mut entries_iter = entries.iter();
         let current = entries_iter.next().map(|m| m.iter()).unwrap_or_default();
         IterMut {
             entries: entries_iter,
             current,
             values: values.iter_mut().map(Some).collect(),
+            prefixes,
         }
     }
 }
