@@ -78,6 +78,93 @@ fn lpm_child_prefix_inserted_before_parent() {
 }
 
 #[test]
+fn lookup_with_prefix_returns_matching_prefix_and_value() {
+    let mut trie = Poptrie::new();
+    trie.insert((u32_strides!(1), 6), 6);
+    trie.insert((u32_strides!(1, 1), 12), 12);
+    trie.insert((u32_strides!(1, 1, 1), 18), 18);
+
+    // Matches /18
+    assert_eq!(
+        trie.lookup_with_prefix(u32_strides!(1, 1, 1, 63)),
+        Some((&(u32_strides!(1, 1, 1), 18), &18))
+    );
+    // /18 prefix doesn't match, falls back to /12
+    assert_eq!(
+        trie.lookup_with_prefix(u32_strides!(1, 1, 2)),
+        Some((&(u32_strides!(1, 1), 12), &12))
+    );
+    // /12 prefix doesn't match, falls back to /6
+    assert_eq!(
+        trie.lookup_with_prefix(u32_strides!(1, 2)),
+        Some((&(u32_strides!(1), 6), &6))
+    );
+    // Nothing matches
+    assert_eq!(trie.lookup_with_prefix(u32_strides!(2)), None);
+}
+
+#[test]
+fn lookup_with_prefix_empty_trie_returns_none() {
+    let trie = Poptrie::<(u32, u8), ()>::new();
+    assert_eq!(trie.lookup_with_prefix(0u32), None);
+    assert_eq!(trie.lookup_with_prefix(u32::MAX), None);
+}
+
+#[test]
+fn lookup_with_prefix_default_route() {
+    let mut trie = Poptrie::new();
+    trie.insert((0u32, 0), 0);
+    assert_eq!(trie.lookup_with_prefix(u32::MAX), Some((&(0u32, 0), &0)));
+}
+
+#[test]
+fn lookup_with_prefix_stays_consistent_after_remove() {
+    let mut trie = Poptrie::new();
+    trie.insert((u32_strides!(1), 6), 6);
+    trie.insert((u32_strides!(1, 1), 12), 12);
+    trie.insert((u32_strides!(1, 1, 1), 18), 18);
+
+    // Removing the middle entry shifts value indices
+    trie.remove((u32_strides!(1, 1), 12));
+
+    assert_eq!(
+        trie.lookup_with_prefix(u32_strides!(1, 1, 1, 63)),
+        Some((&(u32_strides!(1, 1, 1), 18), &18))
+    );
+    assert_eq!(
+        trie.lookup_with_prefix(u32_strides!(1, 1, 2)),
+        Some((&(u32_strides!(1), 6), &6))
+    );
+}
+
+#[test]
+fn lookup_with_prefix_matches_ancestor_entry() {
+    let mut trie = Poptrie::new();
+    trie.insert((u32_strides!(1), 8), 8);
+    // Creates deeper internal nodes on a sibling branch
+    trie.insert((u32_strides!(1, 1, 1), 18), 18);
+
+    // Traversal descends past the node holding the /8 entry; the leaf value
+    // is inherited from it as a default.
+    assert_eq!(
+        trie.lookup_with_prefix(u32_strides!(1, 1, 2)),
+        Some((&(u32_strides!(1), 8), &8))
+    );
+}
+
+#[test]
+fn lookup_with_prefix_mid_stride_prefix() {
+    // /7: one full stride (6 bits) plus 1 bit into the next
+    let mut trie = Poptrie::new();
+    trie.insert((u32_strides!(1), 7), 7);
+    assert_eq!(
+        trie.lookup_with_prefix(u32_strides!(1, 31)),
+        Some((&(u32_strides!(1), 7), &7))
+    );
+    assert_eq!(trie.lookup_with_prefix(u32_strides!(1, 32)), None);
+}
+
+#[test]
 fn two_prefixes_one_stride_apart_with_shared_parent() {
     let mut trie = Poptrie::new();
     trie.insert((u32_strides!(1, 1, 1, 1), 25), 25);

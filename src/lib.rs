@@ -22,9 +22,9 @@ extern crate alloc;
 
 mod address;
 mod bitmap;
+mod entry_index;
 mod iter;
 mod prefix;
-mod value_index;
 
 pub use address::Address;
 pub use iter::{IntoIter, Iter, IterMut, Keys, Values, ValuesMut};
@@ -34,16 +34,13 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitmap::*;
-use value_index::ValueIndex;
+use entry_index::EntryIndex;
 
 /// The maximum number of bits we can consume from the prefix at a time.
 ///
 /// This is 6 because the 2^6 = 64, which is the biggest size for which a native popcount
 /// instruction exists.
 const STRIDE: u8 = 6;
-
-/// A tuple representing a prefix entry in the trie, consisting of a prefix and value index.
-type Entry<P> = (P, ValueIndex);
 
 /// A compressed prefix tree optimized for fast longest prefix match (LPM) lookups.
 ///
@@ -79,13 +76,16 @@ where
     nodes: Vec<Node>,
 
     /// The leaves of the trie, pointing to indices in the values vector.
-    leaves: Vec<ValueIndex>,
+    leaves: Vec<EntryIndex>,
 
-    /// The values associated with the prefixes.
+    /// The values associated with each entry.
     values: Vec<V>,
 
+    /// The prefixes associated with each entry.
+    prefixes: Vec<P>,
+
     /// The entries associated with each node.
-    entries: Vec<BTreeMap<PrefixId, Entry<P>>>,
+    entries: Vec<BTreeMap<PrefixId, EntryIndex>>,
 }
 
 impl<P, V> Poptrie<P, V>
@@ -112,9 +112,10 @@ where
         root_node.leaf_bitmap.set(StrideId(0));
         Poptrie::<P, V> {
             values: Vec::new(),
+            prefixes: Vec::new(),
             nodes: vec![root_node], // Start with a root node
             entries: vec![BTreeMap::new()], // Root's entries
-            leaves: vec![ValueIndex::NONE], // Global default value index
+            leaves: vec![EntryIndex::NONE], // Global default value index
         }
     }
 
@@ -150,7 +151,7 @@ where
 
         assert!(prefix_length <= P::ADDRESS::BITS);
 
-        let mut default_value_index = ValueIndex::NONE;
+        let mut default_value_index = EntryIndex::NONE;
         let mut offset = 0;
 
         // First node is root
@@ -220,16 +221,17 @@ where
         // If an entry already exists, reuse it and return the old value
         let old_value = if let Some(idx) = self.entries[parent_node_index]
             .get(&prefix_id)
-            .and_then(|(_, v)| v.get())
+            .and_then(|v| v.get())
         {
             core::mem::swap(&mut value, &mut self.values[idx]);
             Some(value)
         } else {
             self.values.push(value);
+            self.prefixes.push(prefix);
             let current_value_index =
-                ValueIndex::new((self.values.len() - 1) as u32);
+                EntryIndex::new((self.values.len() - 1) as u32);
             self.entries[parent_node_index]
-                .insert(prefix_id, (prefix, current_value_index));
+                .insert(prefix_id, current_value_index);
             None
         };
 
@@ -294,6 +296,62 @@ where
         let value_index = self.leaves[(leaf_base + leaf_index) as usize];
 
         value_index.get().map(|i| &self.values[i])
+    }
+
+    /// Lookup an address in the trie, performing longest-prefix match, and
+    /// return the matching prefix along with its associated value.
+    ///
+    /// Returns `None` if no prefix matches the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    ///
+    /// trie.insert((0u32, 0), "default");
+    /// trie.insert((u32::from_be_bytes([10, 0, 0, 0]), 8), "10/8");
+    /// trie.insert((u32::from_be_bytes([10, 1, 0, 0]), 16), "10.1/16");
+    ///
+    /// // Longest prefix match: 10.1.2.3 matches 10.1/16
+    /// assert_eq!(
+    ///     trie.lookup_with_prefix(u32::from_be_bytes([10, 1, 2, 3])),
+    ///     Some((&(u32::from_be_bytes([10, 1, 0, 0]), 16), &"10.1/16")),
+    /// );
+    ///
+    /// // Falls back to 10/8
+    /// assert_eq!(
+    ///     trie.lookup_with_prefix(u32::from_be_bytes([10, 2, 0, 0])),
+    ///     Some((&(u32::from_be_bytes([10, 0, 0, 0]), 8), &"10/8")),
+    /// );
+    ///
+    /// // Falls back to default
+    /// assert_eq!(
+    ///     trie.lookup_with_prefix(u32::from_be_bytes([8, 8, 8, 8])),
+    ///     Some((&(0u32, 0), &"default")),
+    /// );
+    /// ```
+    pub fn lookup_with_prefix<A: Into<P::ADDRESS>>(
+        &self,
+        address: A,
+    ) -> Option<(&P, &V)> {
+        let address = address.into();
+
+        let mut offset = 0;
+        let mut node = &self.nodes[0];
+        let mut local_id = StrideId::from_address(address, offset, STRIDE);
+
+        while node.node_bitmap.contains(local_id) {
+            node = &self.nodes[node.get_child_index(local_id)];
+            offset += STRIDE;
+            local_id = StrideId::from_address(address, offset, STRIDE);
+        }
+
+        let leaf_index = node.leaf_bitmap.leafvec_index(local_id);
+        let value_index = self.leaves[(node.leaf_base + leaf_index) as usize];
+
+        value_index.get().map(|i| (&self.prefixes[i], &self.values[i]))
     }
 
     /// Returns `true` if the trie contains an entry for the exact prefix.
@@ -368,7 +426,7 @@ where
         let (parent_node, prefix_id) = self.find_parent_node(prefix)?;
         self.entries[parent_node]
             .get(&prefix_id)
-            .and_then(|(_, vi)| vi.get().map(|i| &self.values[i]))
+            .and_then(|vi| vi.get().map(|i| &self.values[i]))
     }
 
     /// Returns a mutable reference to the value associated with the exact
@@ -392,7 +450,7 @@ where
         let (parent_node, prefix_id) = self.find_parent_node(prefix)?;
         self.entries[parent_node]
             .get(&prefix_id)
-            .and_then(|(_, vi)| vi.get())
+            .and_then(|vi| vi.get())
             .map(|i| &mut self.values[i])
     }
 
@@ -511,17 +569,13 @@ where
     /// assert!(!trie.contains_key((u32::from_be_bytes([10, 1, 0, 0]), 16)));
     /// ```
     pub fn remove(&mut self, prefix: P) -> Option<V> {
-        let value_index = self.remove_entry(0, prefix, 0, ValueIndex::NONE)?;
+        let value_index = self.remove_entry(0, prefix, 0, EntryIndex::NONE)?;
 
         // Update the value indices in all the leaves and entries
         for higher_v in self
             .leaves
             .iter_mut()
-            .chain(
-                self.entries
-                    .iter_mut()
-                    .flat_map(|s| s.values_mut().map(|(_, vi)| vi)),
-            )
+            .chain(self.entries.iter_mut().flat_map(|s| s.values_mut()))
             .filter(|higher_v| **higher_v > value_index)
         {
             higher_v.decrement();
@@ -529,7 +583,9 @@ where
 
         // SAFETY: The value is guaranteed to exist because it was just removed from the
         // entry map.
-        Some(self.values.remove(value_index.get().unwrap()))
+        let index = value_index.get().unwrap();
+        self.prefixes.remove(index);
+        Some(self.values.remove(index))
     }
 
     /// Find the final parent node and the `PrefixId` of the given key if it exists.
@@ -565,8 +621,8 @@ where
         parent_node_index: usize,
         prefix: P,
         offset: u8,
-        default_value_index: ValueIndex,
-    ) -> Option<ValueIndex> {
+        default_value_index: EntryIndex,
+    ) -> Option<EntryIndex> {
         let address = prefix.address();
         let prefix_length = prefix.prefix_length();
 
@@ -599,14 +655,12 @@ where
             let prefix_id =
                 PrefixId::from_address(address, offset, prefix_length - offset);
 
-            self.entries[parent_node_index].remove(&prefix_id).map(|(_, v)| {
+            self.entries[parent_node_index].remove(&prefix_id).inspect(|_| {
                 // Update the leaf ranges
                 self.calculate_leaf_ranges(
                     parent_node_index,
                     default_value_index,
                 );
-
-                v
             })
         }
     }
@@ -658,7 +712,7 @@ where
     fn calculate_leaf_ranges(
         &mut self,
         node_index: usize,
-        default_value_index: ValueIndex,
+        default_value_index: EntryIndex,
     ) {
         // Currently using a not-in-place version
         let leaf_base = self.nodes[node_index].leaf_base as usize;
@@ -671,7 +725,7 @@ where
             .collect();
 
         let (new_bitmap, new_leaves) = build_leaf_ranges(
-            self.entries[node_index].iter().map(|(&pid, &(_, vi))| (pid, vi)),
+            self.entries[node_index].iter().map(|(&pid, &vi)| (pid, vi)),
             default_value_index,
         );
 
@@ -706,7 +760,7 @@ where
         &self,
         parent_node_index: usize,
         node_stride_id: StrideId,
-    ) -> ValueIndex {
+    ) -> EntryIndex {
         let parent_node = &self.nodes[parent_node_index];
         let leaf_bitmap_index = parent_node.leaf_base
             + self.nodes[parent_node_index]
@@ -723,7 +777,7 @@ where
     fn build_leaf_ranges_bulk_insert(
         &mut self,
         node_index: usize,
-        default_value_index: ValueIndex,
+        default_value_index: EntryIndex,
     ) {
         let leaf_base = self.nodes[node_index].leaf_base as usize;
         let leaf_bitmap = &mut self.nodes[node_index].leaf_bitmap;
@@ -732,13 +786,13 @@ where
         let default = entries
             .peek()
             .take_if(|(p, _)| p.prefix_length() == 0)
-            .map(|(_, (_, v))| *v)
+            .map(|(_, v)| **v)
             .unwrap_or(default_value_index);
 
         self.leaves.insert(leaf_base, default);
         leaf_bitmap.set(StrideId(0));
 
-        for (prefix_id, (_, value)) in entries {
+        for (prefix_id, value) in entries {
             let (prefix, len) = prefix_id.components();
             let leaf_id = prefix_id.stride_id();
             let leafvec_index = leaf_bitmap.leafvec_index(leaf_id);
@@ -829,9 +883,9 @@ impl Node {
 // - For `Poptrie::insert`, multiple leaves may have to added, where each insert pushes the following leaves
 // - We could not always shrink, trading a little cache locality for insertion speed.
 fn build_leaf_ranges(
-    entries: impl Iterator<Item = (PrefixId, ValueIndex)>,
-    default_value_index: ValueIndex,
-) -> (Bitmap, Vec<ValueIndex>) {
+    entries: impl Iterator<Item = (PrefixId, EntryIndex)>,
+    default_value_index: EntryIndex,
+) -> (Bitmap, Vec<EntryIndex>) {
     let mut leaf_bitmap = Bitmap::new();
 
     let mut entries = entries.peekable();

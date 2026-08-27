@@ -1,12 +1,12 @@
-/// Represents an index into the value table.
+/// Represents an index into the value and prefix tables.
 ///
 /// This is a self-rolled option type to signal a missing value without extra space.
 /// We use the highest representable value to signal `None` so we don't have to subtract.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
-pub(crate) struct ValueIndex(u32);
+pub(crate) struct EntryIndex(u32);
 
-impl ValueIndex {
+impl EntryIndex {
     pub(crate) const NONE: Self = Self(u32::MAX);
 
     pub(crate) fn new(index: u32) -> Self {
