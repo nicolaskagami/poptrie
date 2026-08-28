@@ -1,7 +1,7 @@
 use crate::{
     Node, Poptrie, Prefix, STRIDE,
     bitmap::{PrefixId, StrideId},
-    entry_index::EntryIndex,
+    entry_index::{EntryIndex, LeafSlot},
 };
 use alloc::{collections::btree_map, vec};
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
@@ -47,7 +47,7 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
         // - Insert the would-be leaves into entries.
         // - Insert the new internal nodes for that level, along with their defaults.
         // - Fix the parent's bitmaps with the information above.
-        let mut defaults = vec![EntryIndex::NONE];
+        let mut defaults = vec![LeafSlot::EMPTY];
         let mut level = 0;
 
         // Keeping track of node count and which nodes need to have their node bases set.
@@ -146,10 +146,9 @@ impl<P: Prefix, V> Iterator for IntoIter<P, V> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             for (_, value_index) in &mut self.current {
-                if let Some(idx) = value_index.get() {
-                    if let Some(value) = self.values[idx].take() {
-                        return Some((self.prefixes[idx], value));
-                    }
+                let idx = value_index.index();
+                if let Some(value) = self.values[idx].take() {
+                    return Some((self.prefixes[idx], value));
                 }
             }
             self.current = self.entries.next()?.into_iter();
@@ -208,9 +207,8 @@ impl<'a, P: Prefix, V> Iterator for Iter<'a, P, V> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             for (_, value_index) in &mut self.current {
-                if let Some(idx) = value_index.get() {
-                    return Some((&self.prefixes[idx], &self.values[idx]));
-                }
+                let idx = value_index.index();
+                return Some((&self.prefixes[idx], &self.values[idx]));
             }
             self.current = self.entries.next()?.iter();
         }
@@ -266,14 +264,13 @@ impl<'a, P: Prefix, V> Iterator for IterMut<'a, P, V> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             for (_, value_index) in &mut self.current {
-                if let Some(idx) = value_index.get() {
-                    // SAFETY: Each ValueIndex is unique across all entries so
-                    // no two yielded references alias.
-                    return Some((
-                        &self.prefixes[idx],
-                        self.values[idx].take().unwrap(),
-                    ));
-                }
+                let idx = value_index.index();
+                // SAFETY: Each EntryIndex is unique across all entries so
+                // no two yielded references alias.
+                return Some((
+                    &self.prefixes[idx],
+                    self.values[idx].take().unwrap(),
+                ));
             }
             self.current = self.entries.next()?.iter();
         }

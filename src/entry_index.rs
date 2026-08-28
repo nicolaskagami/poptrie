@@ -1,29 +1,51 @@
-/// Represents an index into the value and prefix tables.
+/// An index into the value and prefix tables.
 ///
-/// This is a self-rolled option type to signal a missing value without extra space.
-/// We use the highest representable value to signal `None` so we don't have to subtract.
+/// The inner value is never `u32::MAX`, which [`LeafSlot`] reserves as its
+/// empty sentinel.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct EntryIndex(u32);
 
 impl EntryIndex {
-    pub(crate) const NONE: Self = Self(u32::MAX);
-
     pub(crate) fn new(index: usize) -> Self {
         debug_assert!(index < u32::MAX as usize);
         Self(index as u32)
     }
 
-    pub(crate) fn is_some(self) -> bool {
-        self != Self::NONE
+    #[inline(always)]
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
     }
 
-    pub(crate) fn get(self) -> Option<usize> {
-        (self.is_some()).then_some(self.0 as usize)
+    pub(crate) fn decrement_if_above(&mut self, removed: EntryIndex) {
+        if *self > removed {
+            self.0 -= 1;
+        }
+    }
+}
+
+/// A possibly empty slot for an `EntryIndex` in the leaves table.
+/// This is a self-rolled option type to signal a missing value without extra space.
+/// We use the highest representable value to signal `None` so we don't have to subtract.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LeafSlot(u32);
+
+impl LeafSlot {
+    pub(crate) const EMPTY: Self = Self(u32::MAX);
+
+    #[inline(always)]
+    pub(crate) fn occupied(entry: EntryIndex) -> Self {
+        Self(entry.0)
     }
 
-    pub(crate) fn decrement(&mut self) {
-        if self.is_some() {
+    #[inline(always)]
+    pub(crate) fn get(self) -> Option<EntryIndex> {
+        (self != Self::EMPTY).then_some(EntryIndex(self.0))
+    }
+
+    pub(crate) fn decrement_if_above(&mut self, removed: EntryIndex) {
+        if self.0 != u32::MAX && self.0 > removed.0 {
             self.0 -= 1;
         }
     }
