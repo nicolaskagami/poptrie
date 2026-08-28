@@ -67,7 +67,7 @@ const STRIDE: u8 = 6;
 /// assert_eq!(trie.lookup(Ipv4Addr::from([10, 1, 2, 3])), Some(&"8"));
 /// assert_eq!(trie.lookup(Ipv4Addr::from([8, 8, 8, 8])), None);
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Poptrie<P, V>
 where
     P: Prefix,
@@ -928,4 +928,13 @@ fn build_leaf_ranges(
     }
 
     (leaf_bitmap, leaves)
+}
+
+impl<K, V> Default for Poptrie<K, V>
+where
+    K: Prefix,
+{
+    fn default() -> Self {
+        Self::new()
+    }
 }
