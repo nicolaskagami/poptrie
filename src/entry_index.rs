@@ -9,8 +9,9 @@ pub(crate) struct EntryIndex(u32);
 impl EntryIndex {
     pub(crate) const NONE: Self = Self(u32::MAX);
 
-    pub(crate) fn new(index: u32) -> Self {
-        Self(index)
+    pub(crate) fn new(index: usize) -> Self {
+        debug_assert!(index < u32::MAX as usize);
+        Self(index as u32)
     }
 
     pub(crate) fn is_some(self) -> bool {

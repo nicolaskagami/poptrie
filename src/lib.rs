@@ -228,8 +228,7 @@ where
         } else {
             self.values.push(value);
             self.prefixes.push(prefix);
-            let current_value_index =
-                EntryIndex::new((self.values.len() - 1) as u32);
+            let current_value_index = EntryIndex::new(self.values.len() - 1);
             self.entries[parent_node_index]
                 .insert(prefix_id, current_value_index);
             None

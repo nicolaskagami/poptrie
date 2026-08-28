@@ -62,7 +62,7 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
                 poptrie.values.push(value);
                 poptrie.prefixes.push(prefix);
                 let current_value_index =
-                    EntryIndex::new((poptrie.values.len() - 1) as u32);
+                    EntryIndex::new(poptrie.values.len() - 1);
 
                 if level > 0 {
                     let local_id = path[level - 1];
