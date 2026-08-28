@@ -206,7 +206,7 @@ impl<'a, P: Prefix, V> Iterator for Iter<'a, P, V> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            for (_, value_index) in &mut self.current {
+            if let Some((_, value_index)) = self.current.next() {
                 let idx = value_index.index();
                 return Some((&self.prefixes[idx], &self.values[idx]));
             }
@@ -263,7 +263,7 @@ impl<'a, P: Prefix, V> Iterator for IterMut<'a, P, V> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            for (_, value_index) in &mut self.current {
+            if let Some((_, value_index)) = self.current.next() {
                 let idx = value_index.index();
                 // SAFETY: Each EntryIndex is unique across all entries so
                 // no two yielded references alias.
