@@ -59,11 +59,6 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
             for (path, mut parent_node_index, prefix, address, len, value) in
                 items.extract_if(.., |(path, ..)| path.len() <= level)
             {
-                poptrie.values.push(value);
-                poptrie.prefixes.push(prefix);
-                let current_value_index =
-                    EntryIndex::new(poptrie.values.len() - 1);
-
                 if level > 0 {
                     let local_id = path[level - 1];
                     parent_node_index = poptrie.nodes[parent_node_index]
@@ -74,8 +69,22 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
                 let remaining_length = len - offset;
                 let prefix_id =
                     PrefixId::from_address(address, offset, remaining_length);
-                poptrie.entries[parent_node_index]
-                    .insert(prefix_id, current_value_index);
+
+                // Previous duplicate entries are dropped
+                match poptrie.entries[parent_node_index].entry(prefix_id) {
+                    alloc::collections::btree_map::Entry::Vacant(entry) => {
+                        poptrie.values.push(value);
+                        poptrie.prefixes.push(prefix);
+                        let current_value_index =
+                            EntryIndex::new(poptrie.values.len() - 1);
+                        entry.insert(current_value_index);
+                    }
+                    alloc::collections::btree_map::Entry::Occupied(entry) => {
+                        let index = entry.get().index();
+                        poptrie.values[index] = value;
+                        poptrie.prefixes[index] = prefix;
+                    }
+                }
             }
 
             // Last step allows us to calculate the leaves
@@ -482,5 +491,15 @@ mod tests {
                 (u32::from_be_bytes([10, 1, 2, 0]), 24),
             ]
         );
+    }
+
+    #[test]
+    fn from_iter_replaces_duplicate_prefixes() {
+        let trie: Poptrie<(u32, u8), u32> =
+            [((0u32, 0), 1), ((0u32, 0), 2)].into_iter().collect();
+
+        assert_eq!(trie.len(), 1);
+        assert_eq!(trie.lookup(0u32), Some(&2));
+        assert_eq!(trie.into_iter().collect::<Vec<_>>(), [((0u32, 0), 2)]);
     }
 }
