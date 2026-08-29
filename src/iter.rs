@@ -1,7 +1,7 @@
 use crate::{
     Node, Poptrie, Prefix, STRIDE,
     bitmap::{PrefixId, StrideId},
-    entry_index::EntryIndex,
+    entry_index::{EntryIndex, LeafSlot},
 };
 use alloc::{collections::btree_map, vec};
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
@@ -47,7 +47,7 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
         // - Insert the would-be leaves into entries.
         // - Insert the new internal nodes for that level, along with their defaults.
         // - Fix the parent's bitmaps with the information above.
-        let mut defaults = vec![EntryIndex::NONE];
+        let mut defaults = vec![LeafSlot::EMPTY];
         let mut level = 0;
 
         // Keeping track of node count and which nodes need to have their node bases set.
@@ -59,11 +59,6 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
             for (path, mut parent_node_index, prefix, address, len, value) in
                 items.extract_if(.., |(path, ..)| path.len() <= level)
             {
-                poptrie.values.push(value);
-                poptrie.prefixes.push(prefix);
-                let current_value_index =
-                    EntryIndex::new((poptrie.values.len() - 1) as u32);
-
                 if level > 0 {
                     let local_id = path[level - 1];
                     parent_node_index = poptrie.nodes[parent_node_index]
@@ -74,8 +69,22 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
                 let remaining_length = len - offset;
                 let prefix_id =
                     PrefixId::from_address(address, offset, remaining_length);
-                poptrie.entries[parent_node_index]
-                    .insert(prefix_id, current_value_index);
+
+                // Previous duplicate entries are dropped
+                match poptrie.entries[parent_node_index].entry(prefix_id) {
+                    alloc::collections::btree_map::Entry::Vacant(entry) => {
+                        poptrie.values.push(value);
+                        poptrie.prefixes.push(prefix);
+                        let current_value_index =
+                            EntryIndex::new(poptrie.values.len() - 1);
+                        entry.insert(current_value_index);
+                    }
+                    alloc::collections::btree_map::Entry::Occupied(entry) => {
+                        let index = entry.get().index();
+                        poptrie.values[index] = value;
+                        poptrie.prefixes[index] = prefix;
+                    }
+                }
             }
 
             // Last step allows us to calculate the leaves
@@ -146,10 +155,9 @@ impl<P: Prefix, V> Iterator for IntoIter<P, V> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             for (_, value_index) in &mut self.current {
-                if let Some(idx) = value_index.get() {
-                    if let Some(value) = self.values[idx].take() {
-                        return Some((self.prefixes[idx], value));
-                    }
+                let idx = value_index.index();
+                if let Some(value) = self.values[idx].take() {
+                    return Some((self.prefixes[idx], value));
                 }
             }
             self.current = self.entries.next()?.into_iter();
@@ -207,10 +215,9 @@ impl<'a, P: Prefix, V> Iterator for Iter<'a, P, V> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            for (_, value_index) in &mut self.current {
-                if let Some(idx) = value_index.get() {
-                    return Some((&self.prefixes[idx], &self.values[idx]));
-                }
+            if let Some((_, value_index)) = self.current.next() {
+                let idx = value_index.index();
+                return Some((&self.prefixes[idx], &self.values[idx]));
             }
             self.current = self.entries.next()?.iter();
         }
@@ -265,15 +272,14 @@ impl<'a, P: Prefix, V> Iterator for IterMut<'a, P, V> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            for (_, value_index) in &mut self.current {
-                if let Some(idx) = value_index.get() {
-                    // SAFETY: Each ValueIndex is unique across all entries so
-                    // no two yielded references alias.
-                    return Some((
-                        &self.prefixes[idx],
-                        self.values[idx].take().unwrap(),
-                    ));
-                }
+            if let Some((_, value_index)) = self.current.next() {
+                let idx = value_index.index();
+                // SAFETY: Each EntryIndex is unique across all entries so
+                // no two yielded references alias.
+                return Some((
+                    &self.prefixes[idx],
+                    self.values[idx].take().unwrap(),
+                ));
             }
             self.current = self.entries.next()?.iter();
         }
@@ -485,5 +491,15 @@ mod tests {
                 (u32::from_be_bytes([10, 1, 2, 0]), 24),
             ]
         );
+    }
+
+    #[test]
+    fn from_iter_replaces_duplicate_prefixes() {
+        let trie: Poptrie<(u32, u8), u32> =
+            [((0u32, 0), 1), ((0u32, 0), 2)].into_iter().collect();
+
+        assert_eq!(trie.len(), 1);
+        assert_eq!(trie.lookup(0u32), Some(&2));
+        assert_eq!(trie.into_iter().collect::<Vec<_>>(), [((0u32, 0), 2)]);
     }
 }
