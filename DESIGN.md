@@ -1,7 +1,7 @@
 # Design
 This crate implements poptrie, a compressed trie for efficient longest-prefix-match lookups.
 The main use of this data structure is as a FIB (Forwarding Information Base) for IP routing.
-While this problem is frequently solved with TCAMs in hardware, there is a growing need for 
+While this problem is frequently solved with TCAMs in hardware, there is a growing need for
 software solutions with the rise of Software-Defined Networking.
 This context informs a lot of our design decisions.
 
@@ -13,7 +13,7 @@ This context informs a lot of our design decisions.
 
 Our main goal is to provide a reliable and efficient solution to LPM lookups in Rust.
 This means not using `unsafe`, having few dependencies (or none, so far), and being `no_std` so that it can be used in a wide range of environments.
-`Poptrie` currently require `alloc` but we could eventually develop our own memory management given a chunk of memory. 
+`Poptrie` currently require `alloc` but we could eventually develop our own memory management given a chunk of memory.
 It wouldn't be that far fetched as it's already very opinionated about how things are stored.
 
 The poptrie paper provides many optimizations that are useful for performance. We implemented most of them and added a few of our own. The focus lies mostly on cache locality and reducing lookup complexity. We'll make tradeoffs that benefit lookup performance over everything, except for correctness and safety.
@@ -102,7 +102,7 @@ The inspiration came from how traverse between parent / children in a heap:
 | 2         | 1/1        |
 | 3         | 0/2        |
 | 4         | 1/2        |
-| 5         | 2/2        | 
+| 5         | 2/2        |
 | 6         | 3/2        |
 ```
 Defined as: `(1 << len) - 1 + prefix`
@@ -147,6 +147,9 @@ After inserting `0/2 -> C`, terminating at slot `2/2` restores `B`:
        [===== C ======][===== B =====][============= A =============]
        ^base           ^term
 ```
+
+### Bulk Construction
+While `Poptrie::insert` shifts the node and leaf vectors on every insertion, the crate also supports building a trie from a batch of entries in one pass. Both `FromIterator` and `Poptrie::bulk_insert` feed a shared breadth-first builder: entries are sorted by their stride path, then the trie is assembled level by level so that node bases, leaf bases, and leaf bitmaps are computed once per level rather than after every individual insert. `Poptrie::bulk_insert` extends this to non-empty tries with a merge-and-rebuild strategy: the existing entries are consumed and replayed before the new batch, preserving the last-wins replacement semantics of `Poptrie::insert`. Small batches fall back to a plain insert loop, since rebuilding an existing trie only pays off once the batch is large enough to amortize the `O(existing)` rebuild.
 
 ### Longer Strides
 Longer strides may provide many benefits to the efficiency of the poptrie algorithm, but these are limited by hardware support.

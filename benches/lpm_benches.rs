@@ -118,6 +118,34 @@ fn bench_insert(c: &mut Criterion) {
                 })
             },
         );
+
+        // Bulk insertion into an empty trie
+        group.bench_with_input(
+            BenchmarkId::new("bulk_insert_empty", size),
+            &prefixes,
+            |b, prefixes| {
+                b.iter(|| {
+                    let mut poptrie = Poptrie::new();
+                    poptrie.extend(black_box(prefixes.iter().copied()));
+                    black_box(poptrie)
+                })
+            },
+        );
+
+        // Bulk insertion into a non-empty trie
+        group.bench_with_input(
+            BenchmarkId::new("bulk_insert_existing", size),
+            &prefixes,
+            |b, prefixes| {
+                let (seed, rest) = prefixes.split_at(prefixes.len() / 2);
+                b.iter(|| {
+                    let mut poptrie: Poptrie<_, _> =
+                        seed.iter().copied().collect();
+                    poptrie.extend(black_box(rest.iter().copied()));
+                    black_box(poptrie)
+                })
+            },
+        );
     }
     group.finish();
 }

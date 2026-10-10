@@ -1,3 +1,4 @@
+mod bulk;
 mod contains;
 mod default;
 mod insert;

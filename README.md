@@ -2,7 +2,7 @@ Poptrie
 ====
 A pure Rust implementation of [Poptrie](https://dl.acm.org/doi/abs/10.1145/2829988.2787474), a data structure for efficient longest-prefix matching (LPM) lookups.
 
-Poptrie uses bitmaps combined with the popcount instruction to achieve very fast longest-prefix lookups. 
+Poptrie uses bitmaps combined with the popcount instruction to achieve very fast longest-prefix lookups.
 During lookup, the key is consumed in the biggest step that can be represented in a bitmap for which the native popcount instruction exists (i.e. 6-bit steps in a 64-bit bitmap).
 It is similar to how a tree-bitmap works, but with a more contiguous use of memory, trading insertion speed for cache locality.
 
@@ -19,7 +19,7 @@ This is particularly useful for IP forwarding tables (FIBs), where the longest-p
 - Pure rust, `no_std`, no external dependencies, no `unsafe` code. Does require `alloc`.
 - Native support for `ipnet`, `cidr`, and `(K, u8)` for `IpAddr` and all unsigned integers.
 - Supports *very fast* `lookup()` operations while still being ergonomic, safe and readable.
-- Supports common collection methods such as `insert()`, `remove()`, `keys()`, `values()`, etc.
+- Supports common collection methods such as `insert()`, `extend()`, `remove()`, `keys()`, `values()`, etc.
 - Supports fast construction with `FromIterator` and the ergonomic `IntoIter` patterns.
 
 ### Documentation
@@ -69,6 +69,8 @@ assert_eq!(trie.lookup(Ipv4Addr::from([192, 168, 1, 5])), Some(&"16"));
 | `new()` | Construct a new, empty poptrie | `O(1)` |
 | `lookup(address)` | Longest-prefix match lookup, returns `Option<&V>` | `O(1)`*  |
 | `insert(prefix, value)` | Insert/replace a value for an exact prefix, returning the previous value if present | `O(n)`** |
+| `extend(iter)` | Bulk-insert/replace many entries, merging with existing entries | `O(n + m)`*** |
+| `extend(iter)` | Bulk-insert via the `Extend` trait | `O(n + m)`*** |
 | `contains_key(prefix)` | Returns `true` if the exact prefix is present | `O(1)` |
 | `remove(prefix)` | Remove an exact prefix and return its value, if present | `O(n)` |
 
@@ -76,12 +78,14 @@ assert_eq!(trie.lookup(Ipv4Addr::from([192, 168, 1, 5])), Some(&"16"));
 
 > \** Inserts are `O(n)` since all the nodes are compacted into a contiguous space.
 
+> \*** Bulk insertions rebuild the trie breadth-first in `O(n + m)`, where `m` is the number of new entries, avoiding the per-insert shifting cost.
+
 ### Lookup performance
 
 This crate's lookup performance beats other trie-based implementations, including the original poptrie ([pixos/poptrie](https://github.com/pixos/poptrie)).
 
-Benchmarked with random lookups on tables of 1k, 10k and 100k random prefixes. 
-All contenders were built with `RUSTFLAGS="-C target-cpu=native"`, which enables the use of architecture-specific instructions, if available. 
+Benchmarked with random lookups on tables of 1k, 10k and 100k random prefixes.
+All contenders were built with `RUSTFLAGS="-C target-cpu=native"`, which enables the use of architecture-specific instructions, if available.
 This is critical for performance as the poptrie relies on native `POPCNT` and bit manipulation instructions (e.g. `BEXTR` on x86) to achieve its performance characteristics.
 
 | Implementation | 1k prefixes | 10k prefixes | 100k prefixes |
@@ -99,11 +103,11 @@ Running the benchmarks:
 RUSTFLAGS="-C target-cpu=native" cargo bench
 ```
 
-### Reference 
+### Reference
 
 Asai, Hirochika, and Yasuhiro Ohara. **[Poptrie: A Compressed Trie with Population Count for Fast and Scalable Software IP Routing Table Lookup](https://doi.org/10.1145/2829988.2787474)** ACM SIGCOMM Computer Communication Review 45.4 (2015): 57-70.
 
-### License 
+### License
 
 This project is licensed under either of:
 

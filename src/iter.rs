@@ -1,5 +1,7 @@
+use core::mem;
+
 use crate::{
-    Entry, Node, Poptrie, Prefix, STRIDE, bitmap::{PrefixId, StrideId}, inner::PoptrieCore, value_index::ValueIndex
+    Entry, Poptrie, Prefix, bitmap::PrefixId, inner::PoptrieCore
 };
 use alloc::{collections::btree_map, vec};
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
@@ -21,105 +23,45 @@ impl<P: Prefix, V> FromIterator<(P, V)> for Poptrie<P, V> {
     /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 2, 1, 1])), Some(&8));
     /// ```
     fn from_iter<I: IntoIterator<Item = (P, V)>>(iter: I) -> Self {
-        let mut poptrie = Self::new();
+        Self::from_entries(iter)
+    }
+}
 
-        let mut items: Vec<_> = iter
-            .into_iter()
-            .map(|(prefix, value)| {
-                let address = prefix.address();
-                let len = prefix.prefix_length();
-                let path: Vec<_> = (0..(len / STRIDE))
-                    .map(|i| {
-                        StrideId::from_address(address, i * STRIDE, STRIDE)
-                    })
-                    .collect();
-                // Let's add the path and the last parent
-                (path, 0usize, prefix, address, len, value)
-            })
-            .collect();
-
-        // Let's sort by lexicographical path
-        items.sort_by(|(a_path, ..), (b_path, ..)| a_path.cmp(b_path));
-
-        // We go breadth-first, level by level:
-        // - Insert the would-be leaves into entries.
-        // - Insert the new internal nodes for that level, along with their defaults.
-        // - Fix the parent's bitmaps with the information above.
-        let mut defaults = vec![ValueIndex::NONE];
-        let mut level = 0;
-
-        // Keeping track of node count and which nodes need to have their node bases set.
-        let mut node_count = 1;
-        let mut nodes_to_process = 0..1;
-
-        while !items.is_empty() {
-            // Remove all leaves for this level and add them to entries
-            for (path, mut parent_node_index, prefix, address, len, value) in
-                items.extract_if(.., |(path, ..)| path.len() <= level)
-            {
-                poptrie.inner.values.push(value);
-                let current_value_index =
-                    ValueIndex::new((poptrie.inner.values.len() - 1) as u32);
-
-                if level > 0 {
-                    let local_id = path[level - 1];
-                    parent_node_index = poptrie.inner.nodes[parent_node_index]
-                        .get_child_index(local_id);
-                }
-
-                let offset = path.len() as u8 * STRIDE;
-                let remaining_length = len - offset;
-                let prefix_id =
-                    PrefixId::from_address(address, offset, remaining_length);
-                poptrie.entries[parent_node_index]
-                    .insert(prefix_id, (prefix, current_value_index));
-            }
-
-            // Last step allows us to calculate the leaves
-            for i in nodes_to_process.clone() {
-                poptrie.inner.nodes[i].leaf_base = poptrie.inner.leaves.len() as u32;
-                poptrie.build_leaf_ranges_bulk_insert(i, defaults[i]);
-            }
-
-            // Deal with all internal nodes of this level
-            // Having the leaves calculated for level-1 allows us to use the leafvec in this
-            // following step instead of the `find_leaf_lpm`.
-            for (path, parent_node_index, ..) in items.iter_mut() {
-                // Point of this is calculating the bitmap count and node_base of the nodes in level -1
-                // We MUST have already added its parents
-                if level > 0 {
-                    let local_id = path[level - 1];
-                    *parent_node_index = poptrie.inner.nodes[*parent_node_index]
-                        .get_child_index(local_id);
-                }
-                let local_id = path[level];
-                // Add node if it doesn't exist
-                if !poptrie.inner.nodes[*parent_node_index]
-                    .node_bitmap
-                    .contains(local_id)
-                {
-                    poptrie.inner.nodes.push(Node::default());
-                    poptrie.inner.nodes[*parent_node_index].node_bitmap.set(local_id);
-                    poptrie.entries.push(BTreeMap::new());
-
-                    // The parent must be ready to provide a default
-                    defaults.push(
-                        poptrie.get_default(*parent_node_index, local_id),
-                    );
-                }
-            }
-
-            // Now we can calculate node bases for all nodes of level-1 since they have the correct bitmaps.
-            for node in poptrie.inner.nodes[nodes_to_process.clone()].iter_mut() {
-                node.node_base = node_count;
-                node_count += node.node_bitmap.pop_count();
-            }
-            nodes_to_process = nodes_to_process.end..poptrie.inner.nodes.len();
-
-            level += 1;
+impl<P: Prefix, V> Extend<(P, V)> for Poptrie<P, V> {
+    /// Bulk-inserts entries into the trie, merging them with existing entries.
+    ///
+    /// For large batches this is more efficient than calling
+    /// [`insert`](Self::insert) in a loop: it rebuilds the trie breadth-first,
+    /// computing node bases and leaves once instead of shifting the internal
+    /// vectors on every insertion.
+    ///
+    /// Inserting a new prefix with the same value as an existing prefix replaces it
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use poptrie::Poptrie;
+    ///
+    /// let mut trie = Poptrie::new();
+    /// trie.bulk_insert([
+    ///     ((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32),
+    ///     ((u32::from_be_bytes([10, 1, 0, 0]), 16), 16u32),
+    /// ]);
+    ///
+    /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 1, 1, 1])), Some(&16));
+    /// assert_eq!(trie.lookup(u32::from_be_bytes([10, 2, 1, 1])), Some(&8));
+    /// ```
+    fn extend<I: IntoIterator<Item = (P, V)>>(&mut self, iter: I) {
+        if self.is_empty() {
+            *self = Self::from_entries(iter);
+            return;
         }
 
-        poptrie
+        // Merge-and-rebuild: existing entries first, new entries after, so new
+        // entries win on duplicates. `into_iter` moves values out without
+        // requiring `V: Clone`.
+        let old = mem::replace(self, Self::new());
+        *self = Self::from_entries(old.into_iter().chain(iter));
     }
 }
 

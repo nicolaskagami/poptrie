@@ -122,6 +122,135 @@ where
         }
     }
 
+    /// Builds a fresh trie from `(prefix, value)` entries using breadth-first
+    /// bulk construction.
+    ///
+    /// Shared by `FromIterator` and [`bulk_insert`](Self::bulk_insert): entries
+    /// are sorted by stride path and the trie is assembled level by level,
+    /// computing node bases and leaves once instead of shifting the internal
+    /// vectors on every insertion like [`insert`](Self::insert) does.
+    pub(crate) fn from_entries(entries: impl IntoIterator<Item = (P, V)>) -> Self {
+        let mut poptrie = Self::new();
+
+        let mut items: Vec<_> = entries
+            .into_iter()
+            .map(|(prefix, value)| {
+                let address = prefix.address();
+                let len = prefix.prefix_length();
+
+                assert!(len <= P::ADDRESS::BITS);
+
+                let path: Vec<_> = (0..(len / STRIDE))
+                    .map(|i| {
+                        StrideId::from_address(address, i * STRIDE, STRIDE)
+                    })
+                    .collect();
+
+                // (path, parent node index, prefix, address, length, value)
+                (path, 0usize, prefix, address, len, value)
+            })
+            .collect();
+
+        // Sort by lexicographical path and partial prefix id so exact-prefix
+        // duplicates end up adjacent. Reversing first makes the stable sort keep
+        // the last occurrence of each duplicate.
+        items.reverse();
+        items.sort_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| {
+                let offset = a.0.len() as u8 * STRIDE;
+                let a_id = PrefixId::from_address(a.3, offset, a.4 - offset);
+                let b_id = PrefixId::from_address(b.3, offset, b.4 - offset);
+                a_id.cmp(&b_id)
+            })
+        });
+        items.dedup_by(|a, b| {
+            if a.0 != b.0 {
+                return false;
+            }
+            let offset = a.0.len() as u8 * STRIDE;
+            PrefixId::from_address(a.3, offset, a.4 - offset)
+                == PrefixId::from_address(b.3, offset, b.4 - offset)
+        });
+
+        // We go breadth-first, level by level:
+        // - Insert the would-be leaves into entries.
+        // - Insert the new internal nodes for that level, along with their defaults.
+        // - Fix the parent's bitmaps with the information above.
+        let mut defaults = vec![ValueIndex::NONE];
+        let mut level = 0;
+
+        // Keeping track of node count and which nodes need to have their node bases set.
+        let mut node_count = 1;
+        let mut nodes_to_process = 0..1;
+
+        while !items.is_empty() {
+            // Remove all leaves for this level and add them to entries
+            for (path, mut parent_node_index, prefix, address, len, value) in
+                items.extract_if(.., |(path, ..)| path.len() <= level)
+            {
+                poptrie.inner.values.push(value);
+                let current_value_index =
+                    ValueIndex::new((poptrie.inner.values.len() - 1) as u32);
+
+                if level > 0 {
+                    let local_id = path[level - 1];
+                    parent_node_index = poptrie.inner.nodes[parent_node_index]
+                        .get_child_index(local_id);
+                }
+
+                let offset = path.len() as u8 * STRIDE;
+                let remaining_length = len - offset;
+                let prefix_id =
+                    PrefixId::from_address(address, offset, remaining_length);
+                poptrie.entries[parent_node_index]
+                    .insert(prefix_id, (prefix, current_value_index));
+            }
+
+            // Last step allows us to calculate the leaves
+            for i in nodes_to_process.clone() {
+                poptrie.inner.nodes[i].leaf_base = poptrie.inner.leaves.len() as u32;
+                poptrie.build_leaf_ranges_bulk_insert(i, defaults[i]);
+            }
+
+            // Deal with all internal nodes of this level
+            // Having the leaves calculated for level-1 allows us to use the leafvec in this
+            // following step instead of the `find_leaf_lpm`.
+            for (path, parent_node_index, ..) in items.iter_mut() {
+                // Point of this is calculating the bitmap count and node_base of the nodes in level -1
+                // We MUST have already added its parents
+                if level > 0 {
+                    let local_id = path[level - 1];
+                    *parent_node_index = poptrie.inner.nodes[*parent_node_index]
+                        .get_child_index(local_id);
+                }
+                let local_id = path[level];
+                // Add node if it doesn't exist
+                if !poptrie.inner.nodes[*parent_node_index]
+                    .node_bitmap
+                    .contains(local_id)
+                {
+                    poptrie.inner.nodes.push(Node::default());
+                    poptrie.inner.nodes[*parent_node_index].node_bitmap.set(local_id);
+                    poptrie.entries.push(BTreeMap::new());
+
+                    // The parent must be ready to provide a default
+                    defaults.push(poptrie.get_default(*parent_node_index, local_id));
+                }
+            }
+
+            // Now we can calculate node bases for all nodes of level-1 since they have the correct bitmaps.
+            for node in poptrie.inner.nodes[nodes_to_process.clone()].iter_mut() {
+                node.node_base = node_count;
+                node_count += node.node_bitmap.pop_count();
+            }
+            nodes_to_process = nodes_to_process.end..poptrie.inner.nodes.len();
+
+            level += 1;
+        }
+
+        poptrie
+    }
+
     /// Insert a value into the trie associated with the given prefix,
     /// returning the previous value if one existed.
     ///
