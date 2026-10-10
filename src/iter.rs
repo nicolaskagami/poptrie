@@ -43,7 +43,7 @@ impl<P: Prefix, V> Extend<(P, V)> for Poptrie<P, V> {
     /// use poptrie::Poptrie;
     ///
     /// let mut trie = Poptrie::new();
-    /// trie.bulk_insert([
+    /// trie.extend([
     ///     ((u32::from_be_bytes([10, 0, 0, 0]), 8), 8u32),
     ///     ((u32::from_be_bytes([10, 1, 0, 0]), 16), 16u32),
     /// ]);
@@ -57,11 +57,25 @@ impl<P: Prefix, V> Extend<(P, V)> for Poptrie<P, V> {
             return;
         }
 
+        let mut iter = iter.into_iter();
+        let Some(first) = iter.next() else {
+            return;
+        };
+        let Some(second) = iter.next() else {
+            self.insert(first.0, first.1);
+            return;
+        };
+
         // Merge-and-rebuild: existing entries first, new entries after, so new
         // entries win on duplicates. `into_iter` moves values out without
         // requiring `V: Clone`.
         let old = mem::replace(self, Self::new());
-        *self = Self::from_entries(old.into_iter().chain(iter));
+        *self = Self::from_entries(
+            old.into_iter()
+                .chain(core::iter::once(first))
+                .chain(core::iter::once(second))
+                .chain(iter),
+        );
     }
 }
 

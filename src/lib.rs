@@ -125,7 +125,7 @@ where
     /// Builds a fresh trie from `(prefix, value)` entries using breadth-first
     /// bulk construction.
     ///
-    /// Shared by `FromIterator` and [`bulk_insert`](Self::bulk_insert): entries
+    /// Shared by `FromIterator` and `Extend`: entries
     /// are sorted by stride path and the trie is assembled level by level,
     /// computing node bases and leaves once instead of shifting the internal
     /// vectors on every insertion like [`insert`](Self::insert) does.
