@@ -1,6 +1,6 @@
 [package]
 name = "poptrie"
-version = "0.2.0"
+version = "0.2.1"
 description = "A pure-rust implementation of poptrie"
 rust-version = "1.87"
 authors = ["Nicolas Kagami <nicolaskagami@gmail.com>"]
